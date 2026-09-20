@@ -1,0 +1,30 @@
+name: Bootstrap source
+
+on:
+  push:
+    paths:
+      - "bootstrap.b64"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unpack source tree
+        shell: bash
+        run: |
+          base64 -d bootstrap.b64 > /tmp/dahua-arc-source.zip
+          unzip -o /tmp/dahua-arc-source.zip
+          rm -f bootstrap.b64
+      - name: Commit source tree
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release v0.6.0 production hardening"
+          git push
