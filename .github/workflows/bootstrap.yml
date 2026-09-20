@@ -3,7 +3,7 @@ name: Bootstrap source
 on:
   push:
     paths:
-      - "bootstrap.b64"
+      - "bootstrap.ready"
 
 permissions:
   contents: write
@@ -17,9 +17,9 @@ jobs:
       - name: Unpack source tree
         shell: bash
         run: |
-          base64 -d bootstrap.b64 > /tmp/dahua-arc-source.zip
-          unzip -o /tmp/dahua-arc-source.zip
-          rm -f bootstrap.b64
+          cat bootstrap.part* | base64 -d > /tmp/dahua-arc-source.tar.xz
+          tar -xJf /tmp/dahua-arc-source.tar.xz
+          rm -f bootstrap.part* bootstrap.ready
       - name: Commit source tree
         shell: bash
         run: |
