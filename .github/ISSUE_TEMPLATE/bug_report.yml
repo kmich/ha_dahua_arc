@@ -1,0 +1,118 @@
+name: Bug report
+description: Report a reproducible problem with the Dahua ARC integration
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem.
+
+        Please prefer a Home Assistant diagnostics export over raw protocol captures. Never post ARC passwords, tokens, session data, unredacted serial numbers, public IP addresses, or other sensitive alarm information.
+
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration version
+      placeholder: "e.g. 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "e.g. 2026.9.3"
+    validations:
+      required: true
+
+  - type: input
+    id: arc_model
+    attributes:
+      label: ARC model
+      placeholder: "e.g. DHI-ARC3800H-FW2(868)"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: ARC firmware version
+      placeholder: "e.g. V2.000.0000011.R.20260807"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input_type
+    attributes:
+      label: Affected input/device type
+      options:
+        - Wired ARC input
+        - Wired MultiIO input
+        - Wireless sensor
+        - Config flow / authentication
+        - Area assignment
+        - Diagnostics / repairs
+        - Research feature
+        - Other / unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and when it occurs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include whether the ARC was armed/disarmed and whether reconnect/restart affects the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Home Assistant logs
+      description: Paste only relevant redacted log lines.
+      render: text
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics or sanitized protocol evidence
+      description: Attach/paste redacted diagnostics. For protocol issues, sanitized payload structure and event ordering can help.
+      render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed passwords, tokens, session data, serial numbers, public IP addresses, and other identifying alarm information from anything I posted.
+          required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Basic checks
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I am reporting observed behavior, not assuming an unverified Dahua protocol feature is supported.
+          required: true

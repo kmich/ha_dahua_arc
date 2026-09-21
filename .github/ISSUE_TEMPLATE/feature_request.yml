@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an improvement to an already supported Dahua ARC workflow
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the device/protocol support form instead if the request depends on a new ARC model, peripheral, CGI method, DHIP event, or other protocol behavior that has not yet been verified.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What Home Assistant use case is difficult or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe how you think the integration should behave.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Describe workarounds or other approaches you have tried.
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Relevant ARC / peripheral model
+      description: Optional if this is not hardware-specific.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Scope
+      options:
+        - label: This request does not rely on exposing passwords, tokens, session data, or unredacted alarm configuration.
+          required: true

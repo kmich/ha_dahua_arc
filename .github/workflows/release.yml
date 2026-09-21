@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to validate/publish (for example v0.1.0)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  preflight:
+    name: Preflight checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Validate tag matches manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          VERSION="${RELEASE_TAG#v}"
+          python - "$VERSION" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          version = sys.argv[1]
+          manifest = json.loads(
+              pathlib.Path("custom_components/dahua_arc/manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          manifest_version = manifest.get("version")
+          if manifest_version != version:
+              raise SystemExit(
+                  f"manifest.json version {manifest_version!r} does not match tag {version!r}"
+              )
+          print(f"OK: manifest version matches release tag: {version}")
+          PY
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Compile
+        run: python -m compileall -q custom_components/dahua_arc tests
+
+      - name: Ruff lint
+        run: ruff check custom_components/dahua_arc tests scripts
+
+      - name: Ruff format
+        run: ruff format --check custom_components/dahua_arc tests scripts
+
+      - name: Security lint
+        # Legacy DHIP requires MD5 challenge response; transport cleanup exceptions
+        # are best-effort. Assert is intentional in packaging validation.
+        run: ruff check --select S --ignore S101,S110,S324 custom_components/dahua_arc scripts
+
+      - name: Protocol and area unit tests
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: >-
+          python -m pytest -p pytest_asyncio.plugin
+          tests/test_state_engine.py tests/test_area_assignment.py
+
+      - name: Home Assistant runtime and config flow tests
+        run: python -m pytest tests/ha --cov=custom_components/dahua_arc --cov-report=term-missing
+
+      - name: Package integrity
+        run: python scripts/check_package.py
+
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@58bff37c8947f690ace498be413a9b78d6f30f93 # 2026-09-21
+
+      - name: HACS validation
+        uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
+        with:
+          category: integration
+
+  release:
+    name: Create or update GitHub Release
+    runs-on: ubuntu-latest
+    needs: preflight
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ARCHIVE=dahua_arc_ha_v${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: Validate tag matches manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$VERSION" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          version = sys.argv[1]
+          manifest = json.loads(
+              pathlib.Path("custom_components/dahua_arc/manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          manifest_version = manifest.get("version")
+          if manifest_version != version:
+              raise SystemExit(
+                  f"manifest.json version {manifest_version!r} does not match tag {version!r}"
+              )
+          PY
+
+      - name: Build release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$ARCHIVE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          from scripts.check_package import build_archive
+
+          build_archive(Path(sys.argv[1]))
+          PY
+
+      - name: Extract changelog notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python - "$VERSION" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          changelog = pathlib.Path("CHANGELOG.md")
+          notes = pathlib.Path("RELEASE_NOTES.md")
+
+          if not changelog.exists():
+              print("No CHANGELOG.md in this tag; preserving existing notes or generating GitHub notes.")
+              raise SystemExit(2)
+
+          content = changelog.read_text(encoding="utf-8")
+          pattern = re.compile(
+              rf"^## \[{re.escape(version)}\].*?\n(.*?)(?=^## \[|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(content)
+          if not match:
+              print(f"No changelog section found for {version}.")
+              raise SystemExit(2)
+
+          notes.write_text(match.group(1).strip() + "\n", encoding="utf-8")
+          PY
+          then
+            echo "HAS_RELEASE_NOTES=true" >> "$GITHUB_ENV"
+          else
+            status=$?
+            if [ "$status" -eq 2 ]; then
+              echo "HAS_RELEASE_NOTES=false" >> "$GITHUB_ENV"
+            else
+              exit "$status"
+            fi
+          fi
+
+      - name: Publish stable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Updating existing release $RELEASE_TAG"
+            RELEASE_ID="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id'
+            )"
+            gh api               --method PATCH               "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"               -F "name=$RELEASE_TAG"               -F draft=false               -F prerelease=false               >/dev/null
+
+            if [ "${HAS_RELEASE_NOTES:-false}" = "true" ]; then
+              gh release edit "$RELEASE_TAG"                 --repo "$GITHUB_REPOSITORY"                 --notes-file RELEASE_NOTES.md
+            fi
+
+            gh release upload "$RELEASE_TAG" "$ARCHIVE"               --repo "$GITHUB_REPOSITORY"               --clobber
+          else
+            echo "Creating release $RELEASE_TAG"
+            if [ "${HAS_RELEASE_NOTES:-false}" = "true" ]; then
+              gh release create "$RELEASE_TAG" "$ARCHIVE"                 --repo "$GITHUB_REPOSITORY"                 --title "$RELEASE_TAG"                 --notes-file RELEASE_NOTES.md                 --verify-tag
+            else
+              gh release create "$RELEASE_TAG" "$ARCHIVE"                 --repo "$GITHUB_REPOSITORY"                 --title "$RELEASE_TAG"                 --generate-notes                 --verify-tag
+            fi
+          fi
