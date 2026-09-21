@@ -1,0 +1,12 @@
+{
+  "domain": "dahua_arc",
+  "name": "Dahua ARC",
+  "version": "0.6.0",
+  "codeowners": ["@kmich"],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "requirements": [],
+  "documentation": "https://github.com/kmich/ha_dahua_arc",
+  "issue_tracker": "https://github.com/kmich/ha_dahua_arc/issues"
+}
