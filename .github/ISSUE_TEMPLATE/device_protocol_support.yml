@@ -1,0 +1,95 @@
+name: Device or protocol support
+description: Report evidence for a new ARC model, peripheral, event, or protocol behavior
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This integration intentionally treats newly observed Dahua behavior as unverified until it is repeatable and testable.
+
+        Do not post passwords, tokens, session material, unredacted serial numbers, public IP addresses, or unrelated alarm configuration.
+
+  - type: input
+    id: arc_model
+    attributes:
+      label: ARC model
+      placeholder: "e.g. DHI-ARC3800H-FW2(868)"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: ARC firmware version
+    validations:
+      required: true
+
+  - type: input
+    id: peripheral
+    attributes:
+      label: Sensor / peripheral / module
+      description: Include the exact model if known.
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Observed path
+      options:
+        - CGI
+        - DHIP
+        - MultiIO
+        - Wireless / radio
+        - PIRCam / LowRateWPAN
+        - Unknown / multiple
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: What state/event/command did you observe? Include armed/disarmed state when relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reproduction and sanitized evidence
+      description: Provide repeatable steps, sanitized payload structure, method/event names, indexes, and event ordering where useful.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: repeatability
+    attributes:
+      label: Repeatability
+      options:
+        - Reproduces consistently
+        - Reproduces intermittently
+        - Observed once
+    validations:
+      required: true
+
+  - type: textarea
+    id: reconnect
+    attributes:
+      label: Restart / reconnect behavior
+      description: If tested, describe whether the state remains correct after ARC restart, HA restart, or network interruption.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I sanitized credentials, tokens, session data, serial numbers, public IP addresses, MAC addresses, and unrelated alarm configuration.
+          required: true
+
+  - type: checkboxes
+    id: claim
+    attributes:
+      label: Evidence status
+      options:
+        - label: I understand this report is protocol evidence, not a claim that the integration already supports this behavior.
+          required: true
