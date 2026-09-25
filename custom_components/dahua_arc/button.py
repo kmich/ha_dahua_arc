@@ -1,46 +1,23 @@
-from __future__ import annotations
+"""Research-only PIRCam detector-test buttons.
 
-import logging
+These are the only entities that write to the ARC: they toggle the
+accessory's SensitivityTest flag and nothing else (no arm/disarm, no sirens).
+"""
+
+from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .client import ArcHub, Zone
-from .const import (
-    CONF_ENABLE_RESEARCH_FEATURES,
-    DEFAULT_ENABLE_RESEARCH_FEATURES,
-    DOMAIN,
-)
-from .inventory import RadioDeviceInfo
+from .const import CONF_ENABLE_RESEARCH_FEATURES, DEFAULT_ENABLE_RESEARCH_FEATURES
+from .entity import DahuaArcEntity, zone_radio_device_info
 
-_LOGGER = logging.getLogger(__name__)
-_TARGET_NAME = "PIRCamera Staircase GF"
-
-
-def _radio_identifier(uid: str, device: RadioDeviceInfo) -> tuple[str, str]:
-    return (DOMAIN, f"{uid}:{device.device_key}")
-
-
-def _device_info_for_zone(
-    hub: ArcHub,
-    uid: str,
-    zone: Zone,
-) -> DeviceInfo:
-    radio = hub.radio_device_for_zone(zone)
-    if radio is not None:
-        return DeviceInfo(
-            identifiers={_radio_identifier(uid, radio)},
-            name=radio.name,
-            manufacturer="Dahua",
-            model=radio.model or radio.sense_method or "ARC radio device",
-            serial_number=radio.serial,
-        )
-    return DeviceInfo(identifiers={(DOMAIN, uid)})
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -54,33 +31,28 @@ async def async_setup_entry(
         return
 
     hub = entry.runtime_data
-    target = next(
-        (
-            zone
-            for zone in hub.zones.values()
-            if zone.name == _TARGET_NAME and zone.sense_method == "PIRCam"
-        ),
-        None,
-    )
-    if target is None:
-        _LOGGER.warning(
-            "Detector-test research buttons not added: %s PIRCam not found",
-            _TARGET_NAME,
-        )
+    if hub.detector_test is None:
         return
-
     async_add_entities(
-        [
-            DahuaArcDetectorTestButton(hub, entry, target, True),
-            DahuaArcDetectorTestButton(hub, entry, target, False),
-        ]
+        DahuaArcDetectorTestButton(hub, entry, zone, start)
+        for zone in hub.detector_test.targets.values()
+        for start in (True, False)
     )
 
 
-class DahuaArcDetectorTestButton(ButtonEntity):
-    _attr_has_entity_name = True
+class DahuaArcDetectorTestButton(DahuaArcEntity, ButtonEntity):
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_should_poll = False
+    _unrecorded_attributes = frozenset(
+        {
+            "successful_style",
+            "timer_active",
+            "last_action",
+            "last_success",
+            "last_error",
+            "last_factory_object",
+            "last_destroy_result",
+        }
+    )
 
     def __init__(
         self,
@@ -89,15 +61,14 @@ class DahuaArcDetectorTestButton(ButtonEntity):
         zone: Zone,
         start: bool,
     ) -> None:
-        self.hub = hub
+        super().__init__(hub, entry)
         self.zone = zone
         self.start = start
-
-        uid = entry.unique_id or entry.entry_id
+        self._watched_indices = frozenset({zone.index})
         suffix = "start_detector_test" if start else "stop_detector_test"
-        self._attr_unique_id = f"{uid}_pircam_{zone.index}_{suffix}"
-        self._attr_name = "Start detector test" if start else "Stop detector test"
-        self._attr_device_info = _device_info_for_zone(hub, uid, zone)
+        self._attr_unique_id = f"{self._uid}_pircam_{zone.index}_{suffix}"
+        self._attr_translation_key = suffix
+        self._attr_device_info = zone_radio_device_info(hub, self._uid, zone)
 
     @property
     def available(self) -> bool:
@@ -105,7 +76,7 @@ class DahuaArcDetectorTestButton(ButtonEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        status = self.hub.detector_test_status()
+        status = self.hub.detector_test_status(self.zone.index)
         return {
             "target": status.get("target_name"),
             "enabled": status.get("enabled"),
@@ -120,11 +91,11 @@ class DahuaArcDetectorTestButton(ButtonEntity):
         }
 
     async def async_press(self) -> None:
+        action = (
+            self.hub.start_detector_test if self.start else self.hub.stop_detector_test
+        )
         try:
-            if self.start:
-                await self.hass.async_add_executor_job(self.hub.start_detector_test)
-            else:
-                await self.hass.async_add_executor_job(self.hub.stop_detector_test)
+            await self.hass.async_add_executor_job(action, self.zone.index)
         except Exception as exc:
             raise HomeAssistantError(
                 f"Dahua ARC detector-test command failed: {exc}"

@@ -108,11 +108,11 @@ _TOKEN_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "1st": ("first",),
     "second": ("second",),
     "2nd": ("second",),
-    # Possessive/plural forms seen in this ARC's labels.
-    "irenes": ("irene",),
-    "melinas": ("melina",),
-    "lydias": ("lydia",),
 }
+
+# Matches the integration's DEFAULT_AREA_MATCH_THRESHOLD; kept here so this
+# module stays free of Home Assistant imports.
+DEFAULT_THRESHOLD = 90
 
 
 def _strip_diacritics(value: str) -> str:
@@ -122,11 +122,12 @@ def _strip_diacritics(value: str) -> str:
 
 def _raw_tokens(value: str) -> list[str]:
     # Dahua labels sometimes contain glued CamelCase words, e.g.
-    # WindowKonstantinos. Split those before case-folding.
+    # WindowKitchen. Split those before case-folding.
     value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
     value = _strip_diacritics(value).casefold()
     value = value.replace("'s", "s")
-    value = re.sub(r"[^\wα-ωάέήίόύώϊϋΐΰ]+", " ", value, flags=re.UNICODE)
+    # Greek letters are intentional: area names may be Greek.
+    value = re.sub(r"[^\wα-ωάέήίόύώϊϋΐΰ]+", " ", value, flags=re.UNICODE)  # noqa: RUF001
     return [token for token in value.split() if token]
 
 
@@ -151,8 +152,20 @@ def _score_variant(
     if not zone_tokens or not area_tokens:
         return 0, "no meaningful location tokens"
 
-    zone_set = set(zone_tokens)
     area_set = set(area_tokens)
+    # Possessive or plural labels ("Annas Window", "Anna's Window" after
+    # apostrophe removal) should match an area named after the singular
+    # ("Anna Office") without hard-coding any household's names.
+    zone_tokens = tuple(
+        token[:-1]
+        if token not in area_set
+        and len(token) > 3
+        and token.endswith("s")
+        and token[:-1] in area_set
+        else token
+        for token in zone_tokens
+    )
+    zone_set = set(zone_tokens)
 
     if zone_set == area_set:
         return 100, "same normalized location words"
@@ -168,8 +181,8 @@ def _score_variant(
         return min(99, 92 + specificity * 2), "area name contained in zone label"
 
     # A short zone label can still strongly imply a richer area, e.g.
-    # "Irenes Window" -> "Irene Office". Ambiguity is handled later by the
-    # second-best margin, so this remains safe when several Irene areas exist.
+    # "Annas Window" -> "Anna Office". Ambiguity is handled later by the
+    # second-best margin, so this remains safe when several Anna areas exist.
     if zone_set <= area_set:
         coverage = len(zone_set) / len(area_set)
         return round(86 + 10 * coverage), "zone location contained in area name"
@@ -190,7 +203,7 @@ def match_zone_to_area(
     zone_name: str,
     areas: Iterable[AreaCandidate],
     *,
-    threshold: int = 78,
+    threshold: int = DEFAULT_THRESHOLD,
     min_margin: int = 6,
 ) -> AreaMatch | None:
     """Return a high-confidence area match or ``None`` when ambiguous.
@@ -236,32 +249,12 @@ def match_zone_to_area(
     )
 
 
-def preview_matches(
-    zone_names: Iterable[str],
-    areas: Iterable[AreaCandidate],
-    *,
-    threshold: int = 78,
-) -> tuple[list[tuple[str, AreaMatch]], list[str]]:
-    """Return matched and unmatched zone names for config-flow previews."""
-
-    area_list = list(areas)
-    matched: list[tuple[str, AreaMatch]] = []
-    unmatched: list[str] = []
-    for zone_name in zone_names:
-        result = match_zone_to_area(zone_name, area_list, threshold=threshold)
-        if result is None:
-            unmatched.append(zone_name)
-        else:
-            matched.append((zone_name, result))
-    return matched, unmatched
-
-
 def match_zone_with_hint(
     zone_name: str,
     area_hint: str | None,
     areas: Iterable[AreaCandidate],
     *,
-    threshold: int = 78,
+    threshold: int = DEFAULT_THRESHOLD,
 ) -> AreaMatch | None:
     """Match a sensor using both Dahua subsystem metadata and its label.
 
