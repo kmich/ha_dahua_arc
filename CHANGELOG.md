@@ -6,6 +6,8 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
 ### Fixed
 
 - A silently dead realtime connection (ARC power loss, pulled cable) is now detected within about two keepalive intervals. Inputs become unavailable and the integration reconnects, instead of showing stale state as live for up to an hour.
@@ -59,5 +61,6 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kmich/ha_dahua_arc/releases/tag/v0.1.0
