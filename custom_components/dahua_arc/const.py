@@ -29,3 +29,5 @@ PLATFORMS = [
 ISSUE_RESEARCH_ENABLED = "research_enabled"
 ISSUE_NO_PRIMARY_ZONES = "no_primary_zones"
 ISSUE_INVENTORY_ERROR = "inventory_error"
+ISSUE_SERIAL_MISMATCH = "serial_mismatch"
+CONF_REMATCH_EXISTING = "rematch_existing"
