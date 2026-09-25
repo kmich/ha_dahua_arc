@@ -4,16 +4,43 @@ pythonpath = ["."]
 addopts = "-q"
 asyncio_mode = "auto"
 
+[tool.coverage.run]
+source = ["custom_components/dahua_arc"]
+branch = true
+
+[tool.coverage.report]
+# Floor for CI; raise it as coverage grows, never lower it.
+fail_under = 65
+show_missing = true
+skip_covered = true
+
 [tool.ruff]
 target-version = "py314"
 line-length = 88
 src = ["custom_components/dahua_arc", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = [
+  "E",     # pycodestyle
+  "F",     # pyflakes
+  "I",     # isort
+  "UP",    # pyupgrade
+  "B",     # bugbear
+  "S",     # bandit security lint
+  "ASYNC", # blocking calls in async code
+  "SIM",   # simplifications
+  "RUF",   # ruff-specific
+]
 ignore = [
   "E501",  # reverse-engineering diagnostics include long RPC method names
+  "S110",  # best-effort socket/transport cleanup deliberately swallows errors
+  "S324",  # legacy DHIP login requires the device's MD5 challenge response
+  "S310",  # urllib only ever opens the configured local ARC http:// URL
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S107", "S108", "S603"]
+"scripts/**" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"

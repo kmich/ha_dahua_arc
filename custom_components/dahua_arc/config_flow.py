@@ -6,10 +6,13 @@ from urllib.error import HTTPError
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry, OptionsFlowWithReload
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
@@ -26,6 +29,7 @@ from .const import (
     CONF_ENABLE_RESEARCH_FEATURES,
     CONF_HTTP_PORT,
     CONF_PERIODIC_RESYNC,
+    CONF_REMATCH_EXISTING,
     CONF_ZONE_AREA_DECISIONS,
     DEFAULT_AREA_MATCH_THRESHOLD,
     DEFAULT_AUTO_AREA_MATCH,
@@ -36,8 +40,16 @@ from .const import (
     DOMAIN,
     ISSUE_INVENTORY_ERROR,
     ISSUE_NO_PRIMARY_ZONES,
+    ISSUE_SERIAL_MISMATCH,
 )
 from .vendor.dahua.exceptions import LoginError
+
+# Never echo a stored password back to the browser, and mask typing.
+_PASSWORD_SELECTOR = selector.TextSelector(
+    selector.TextSelectorConfig(
+        type=selector.TextSelectorType.PASSWORD, autocomplete="current-password"
+    )
+)
 
 
 async def _validate(hass: HomeAssistant, data: Mapping[str, Any]) -> dict[str, Any]:
@@ -66,17 +78,13 @@ def _fallback_unique_id(data: Mapping[str, Any]) -> str:
     return f"{data[CONF_HOST]}:{data[CONF_DHIP_PORT]}"
 
 
-def _validated_unique_id(result: Mapping[str, Any], data: Mapping[str, Any]) -> str:
-    """Return the best unique ID for a freshly-created config entry."""
-    return str(result["serial_number"])
-
-
 def _unique_id_matches_entry(
     entry: ConfigEntry, result: Mapping[str, Any], data: Mapping[str, Any]
 ) -> bool:
     """Accept current and legacy unique IDs during reauth/reconfigure.
 
-    v0.4.x entries may still be keyed by host:DHIP-port. New entries prefer the
+    Pre-public v0.4.x entries may still be keyed by host:DHIP-port (see
+    CONTRIBUTING.md "Version history"). New entries prefer the
     ARC serial number. During credential or host maintenance we must verify the
     target hub without rejecting a valid legacy entry just because the probe can
     now read the serial number.
@@ -89,7 +97,7 @@ def _unique_id_matches_entry(
     if serial and current == serial:
         return True
     old_data = dict(entry.data)
-    # A pre-v0.6 host:port entry has no proven serial yet. Only allow an
+    # A pre-public (pre-v0.6) host:port entry has no proven serial yet. Only allow an
     # in-place credential update of the same endpoint; never migrate it to a
     # different hub on a guess. The successful probe records its serial.
     return (
@@ -99,15 +107,23 @@ def _unique_id_matches_entry(
     )
 
 
-def _connection_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
+def _connection_schema(
+    defaults: Mapping[str, Any] | None = None, *, password_required: bool = True
+) -> vol.Schema:
+    """Connection form. ``defaults`` never supplies the password."""
     defaults = defaults or {}
+    password_key = (
+        vol.Required(CONF_PASSWORD)
+        if password_required
+        else vol.Optional(CONF_PASSWORD)
+    )
     return vol.Schema(
         {
             vol.Required(CONF_HOST, default=defaults.get(CONF_HOST, "")): str,
             vol.Required(
                 CONF_USERNAME, default=defaults.get(CONF_USERNAME, "admin")
             ): str,
-            vol.Required(CONF_PASSWORD, default=defaults.get(CONF_PASSWORD, "")): str,
+            password_key: _PASSWORD_SELECTOR,
             vol.Required(
                 CONF_HTTP_PORT,
                 default=defaults.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
@@ -126,7 +142,7 @@ def _reauth_schema(defaults: Mapping[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_USERNAME, default=defaults.get(CONF_USERNAME, "admin")
             ): str,
-            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR,
         }
     )
 
@@ -187,8 +203,28 @@ def _preview_text(
     )
 
 
+def _area_match_schema(
+    selected_default: list[str], threshold_default: int, *, offer_rematch: bool
+) -> vol.Schema:
+    fields: dict[Any, Any] = {
+        vol.Optional(
+            CONF_AREA_MATCH_AREAS, default=selected_default
+        ): selector.AreaSelector(selector.AreaSelectorConfig(multiple=True)),
+        vol.Required(CONF_AREA_MATCH_THRESHOLD, default=threshold_default): vol.All(
+            vol.Coerce(int), vol.Range(min=60, max=100)
+        ),
+    }
+    if offer_rematch:
+        fields[vol.Required(CONF_REMATCH_EXISTING, default=False)] = bool
+    return vol.Schema(fields)
+
+
 def _delete_setup_repair_issues(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    for suffix in (ISSUE_INVENTORY_ERROR, ISSUE_NO_PRIMARY_ZONES):
+    for suffix in (
+        ISSUE_INVENTORY_ERROR,
+        ISSUE_NO_PRIMARY_ZONES,
+        ISSUE_SERIAL_MISMATCH,
+    ):
         ir.async_delete_issue(hass, DOMAIN, f"{entry.entry_id}_{suffix}")
 
 
@@ -200,11 +236,10 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._probe_result: dict[str, Any] = {}
         self._options: dict[str, Any] = {}
         self._preview: dict[str, Any] = {}
-        self._reauth_entry: ConfigEntry | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             user_input = dict(user_input)
@@ -224,7 +259,7 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for existing in self._async_current_entries()
                 ):
                     return self.async_abort(reason="already_configured")
-                await self.async_set_unique_id(_validated_unique_id(result, user_input))
+                await self.async_set_unique_id(str(result["serial_number"]))
                 self._abort_if_unique_id_configured()
                 self._async_abort_entries_match(
                     {
@@ -241,16 +276,16 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=_connection_schema(), errors=errors
         )
 
-    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
-        self._reauth_entry = self._get_reauth_entry()
-        self._connection_data = dict(entry_data)
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        entry = self._reauth_entry or self._get_reauth_entry()
+        entry = self._get_reauth_entry()
         if user_input is not None:
             updated = dict(entry.data)
             updated[CONF_USERNAME] = str(user_input[CONF_USERNAME])
@@ -280,12 +315,15 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         entry = self._get_reconfigure_entry()
         if user_input is not None:
             user_input = dict(user_input)
             user_input[CONF_HOST] = str(user_input[CONF_HOST]).strip()
+            # A blank password keeps the stored one.
+            if not user_input.get(CONF_PASSWORD):
+                user_input[CONF_PASSWORD] = entry.data[CONF_PASSWORD]
             try:
                 result = await _validate(self.hass, user_input)
             except Exception as exc:
@@ -305,13 +343,13 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_connection_schema(entry.data),
+            data_schema=_connection_schema(entry.data, password_required=False),
             errors=errors,
         )
 
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             self._options = dict(user_input)
@@ -331,7 +369,7 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_area_match(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         all_area_ids = [candidate.area_id for candidate in _area_candidates(self.hass)]
         if user_input is not None:
             self._options.update(user_input)
@@ -353,22 +391,16 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
             return await self.async_step_area_preview()
 
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_AREA_MATCH_AREAS, default=all_area_ids
-                ): selector.AreaSelector(selector.AreaSelectorConfig(multiple=True)),
-                vol.Required(
-                    CONF_AREA_MATCH_THRESHOLD,
-                    default=DEFAULT_AREA_MATCH_THRESHOLD,
-                ): vol.All(vol.Coerce(int), vol.Range(min=60, max=100)),
-            }
+        return self.async_show_form(
+            step_id="area_match",
+            data_schema=_area_match_schema(
+                all_area_ids, DEFAULT_AREA_MATCH_THRESHOLD, offer_rematch=False
+            ),
         )
-        return self.async_show_form(step_id="area_match", data_schema=schema)
 
     async def async_step_area_preview(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         if user_input is not None:
             if user_input["confirm"]:
                 return self._create_entry()
@@ -385,7 +417,7 @@ class DahuaArcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
-    def _create_entry(self) -> FlowResult:
+    def _create_entry(self) -> ConfigFlowResult:
         return self.async_create_entry(
             title=f"Dahua ARC {self._connection_data[CONF_HOST]}",
             data=self._connection_data,
@@ -409,7 +441,7 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         current = self.config_entry.options
         if user_input is not None:
             self._options = dict(current)
@@ -441,23 +473,23 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
 
     async def async_step_area_match(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         current = self.config_entry.options
         all_area_ids = [candidate.area_id for candidate in _area_candidates(self.hass)]
         if user_input is not None:
+            user_input = dict(user_input)
+            rematch = bool(user_input.pop(CONF_REMATCH_EXISTING, False))
             self._options.update(user_input)
             selected_ids = self._options.get(CONF_AREA_MATCH_AREAS, [])
             candidates = _area_candidates(self.hass, selected_ids)
-            hub = getattr(self.config_entry, "runtime_data", None)
-            primary = list(hub.primary_zones.values()) if hub else []
-            items = [
-                {"index": zone.index, "name": zone.name, "area_hint": zone.area_hint}
-                for zone in primary
-            ]
+            previous = dict(current.get(CONF_ZONE_AREA_DECISIONS, {}))
             decisions = decide_zone_areas(
-                items,
+                self._match_items(previous),
                 candidates,
                 threshold=int(self._options[CONF_AREA_MATCH_THRESHOLD]),
+                # Stored decisions are kept unless the user explicitly asks to
+                # re-evaluate them, so a rename never silently moves a zone.
+                previous=None if rematch else previous,
             )
             self._options[CONF_ZONE_AREA_DECISIONS] = decisions
             sample, matched, unmatched = _preview_text(decisions, candidates)
@@ -469,25 +501,35 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
             }
             return await self.async_step_area_preview()
 
-        selected_default = current.get(CONF_AREA_MATCH_AREAS, all_area_ids)
-        threshold_default = current.get(
-            CONF_AREA_MATCH_THRESHOLD, DEFAULT_AREA_MATCH_THRESHOLD
+        return self.async_show_form(
+            step_id="area_match",
+            data_schema=_area_match_schema(
+                current.get(CONF_AREA_MATCH_AREAS, all_area_ids),
+                current.get(CONF_AREA_MATCH_THRESHOLD, DEFAULT_AREA_MATCH_THRESHOLD),
+                offer_rematch=bool(current.get(CONF_ZONE_AREA_DECISIONS)),
+            ),
         )
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_AREA_MATCH_AREAS, default=selected_default
-                ): selector.AreaSelector(selector.AreaSelectorConfig(multiple=True)),
-                vol.Required(
-                    CONF_AREA_MATCH_THRESHOLD, default=threshold_default
-                ): vol.All(vol.Coerce(int), vol.Range(min=60, max=100)),
-            }
-        )
-        return self.async_show_form(step_id="area_match", data_schema=schema)
+
+    def _match_items(
+        self, previous: Mapping[str, Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Zones to match: live topology, or stored decisions if not loaded."""
+        hub = getattr(self.config_entry, "runtime_data", None)
+        if hub is not None:
+            return [
+                {"index": zone.index, "name": zone.name, "area_hint": zone.area_hint}
+                for zone in hub.primary_zones.values()
+            ]
+        # The entry is not running (e.g. ARC offline). Re-use the zone names
+        # recorded with the previous decisions instead of wiping them.
+        return [
+            {"index": index, "name": decision.get("zone_name") or ""}
+            for index, decision in previous.items()
+        ]
 
     async def async_step_area_preview(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         if user_input is not None:
             if user_input["confirm"]:
                 return self.async_create_entry(data=self._options)

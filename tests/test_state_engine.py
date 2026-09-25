@@ -1,30 +1,20 @@
 from __future__ import annotations
 
-import importlib
 import io
 import json
 import struct
-import sys
-import types
-from pathlib import Path
 
+import pytest
+from custom_components.dahua_arc.protocol import engine as engine_mod
+from custom_components.dahua_arc.protocol import util
+from custom_components.dahua_arc.protocol.models import Zone
+from custom_components.dahua_arc.vendor.dahua import const
+from custom_components.dahua_arc.vendor.dahua import transport as transport_mod
+from custom_components.dahua_arc.vendor.dahua.exceptions import DHIPError
 
-def _load_api_module():
-    root = Path(__file__).resolve().parents[1]
-    custom_components = types.ModuleType("custom_components")
-    custom_components.__path__ = [str(root / "custom_components")]
-    package = types.ModuleType("custom_components.dahua_arc")
-    package.__path__ = [str(root / "custom_components" / "dahua_arc")]
-    sys.modules.setdefault("custom_components", custom_components)
-    sys.modules.setdefault("custom_components.dahua_arc", package)
-    return importlib.import_module("custom_components.dahua_arc.api")
-
-
-api = _load_api_module()
-EVENT_CODE = api.EVENT_CODE
-StateEngine = api.StateEngine
-Zone = api.Zone
-raw_to_active = api.raw_to_active
+EVENT_CODE = engine_mod.EVENT_CODE
+StateEngine = engine_mod.StateEngine
+raw_to_active = util.raw_to_active
 
 
 def test_raw_to_active_maps_known_arc_values() -> None:
@@ -158,14 +148,14 @@ def test_unknown_raw_state_does_not_claim_closed() -> None:
 def test_fragmented_snapshot_reconstruction_and_order_guard() -> None:
     payload = json.dumps({"result": True, "params": {"States": []}}).encode()
     halves = (payload[:15], payload[15:])
-    header = api.const.HEADER_FMT
+    header = const.HEADER_FMT
 
     def frame(part: bytes, index: int) -> bytes:
         return (
             struct.pack(
                 header,
-                api.const.HEADER_SIZE,
-                api.const.DHIP_MAGIC,
+                const.HEADER_SIZE,
+                const.DHIP_MAGIC,
                 1,
                 42,
                 len(part),
@@ -176,32 +166,20 @@ def test_fragmented_snapshot_reconstruction_and_order_guard() -> None:
             + part
         )
 
-    class FakeTransport:
-        def __init__(self, data: bytes):
-            self.stream = io.BytesIO(data)
+    def fake_transport(data: bytes):
+        transport = transport_mod.DHIPTransport("192.0.2.10")
+        stream = io.BytesIO(data)
+        transport.recv_exact = stream.read
+        return transport
 
-        def _recv_exact(self, n: int) -> bytes:
-            return self.stream.read(n)
-
-    client = api.SnapshotClient("192.0.2.10", 5000, "user", "secret")
-    result, fragments, byte_count = client._recv_fragmented_json_locked(
-        FakeTransport(frame(halves[0], 0) + frame(halves[1], 1)), 42
-    )
+    result, fragments, byte_count = fake_transport(
+        frame(halves[0], 0) + frame(halves[1], 1)
+    ).recv_fragmented_json(42)
     assert result["result"] is True
     assert fragments == 2
     assert byte_count == len(payload)
 
-    import pytest
-
-    with pytest.raises(RuntimeError, match="fragment order mismatch"):
-        client._recv_fragmented_json_locked(FakeTransport(frame(halves[0], 1)), 42)
-
-
-def test_hub_unavailable_when_realtime_stream_is_down() -> None:
-    hub = api.ArcHub("192.0.2.10", 80, 5000, "user", "secret")
-    assert hub.enable_research_features is False
-    hub.snapshot_client = types.SimpleNamespace(connected=True)
-    hub.realtime = types.SimpleNamespace(connected=False)
-    assert hub.available is False
-    hub.realtime.connected = True
-    assert hub.available is True
+    with pytest.raises(DHIPError, match="fragment order mismatch"):
+        fake_transport(frame(halves[0], 1)).recv_fragmented_json(42)
+    with pytest.raises(DHIPError, match="request id mismatch"):
+        fake_transport(frame(halves[0], 0)).recv_fragmented_json(41)

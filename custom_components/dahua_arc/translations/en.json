@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to Dahua ARC",
-        "description": "Connect locally to a Dahua ARC alarm hub. The integration is read-only: it discovers the ARC hub, paired radio devices, MultiIO wired inputs, wireless sensors, sirens, repeaters, keyfobs/keypads, alarm-related configuration, capabilities, and realtime event codes.",
+        "description": "Connect locally to a Dahua ARC alarm hub. In normal operation the integration only reads from the hub: it discovers the ARC hub, paired radio devices, MultiIO wired inputs, wireless sensors, sirens, repeaters, keyfobs/keypads, alarm-related configuration and realtime alarm-input state. It never arms, disarms or triggers outputs.",
         "data": {
           "host": "Host",
           "username": "Username",
@@ -15,7 +15,8 @@
         "data_description": {
           "host": "IP address or hostname of the Dahua ARC hub.",
           "http_port": "CGI HTTP port, normally 80.",
-          "dhip_port": "DHIP/RPC2 port, normally 5000."
+          "dhip_port": "DHIP/RPC2 port, normally 5000.",
+          "password": "Password of a local ARC user. It is stored in Home Assistant and never shown again."
         }
       },
       "behavior": {
@@ -29,7 +30,7 @@
         "data_description": {
           "periodic_resync_seconds": "A local DHIP snapshot verifies current AlarmIn states if a realtime event was missed. 300 seconds is recommended.",
           "auto_area_match": "Uses Dahua AlarmSubSystem room assignments first, then local sensor names, and matches them against your existing Home Assistant area names and aliases. Ambiguous matches are skipped.",
-          "enable_research_features": "Off by default. Enables experimental PIRCam snapshot camera, detector-test buttons, and LowRateWPAN polling/subscription diagnostics. Leave disabled for production wired-zone operation."
+          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation."
         }
       },
       "area_match": {
@@ -41,7 +42,7 @@
         },
         "data_description": {
           "area_match_areas": "Only selected areas are considered. This is useful when similarly named rooms exist.",
-          "area_match_threshold": "Higher values are more conservative. 78% is recommended."
+          "area_match_threshold": "Higher values are more conservative. 90% is recommended."
         }
       },
       "area_preview": {
@@ -72,7 +73,8 @@
         "data_description": {
           "host": "IP address or hostname of the Dahua ARC hub.",
           "http_port": "CGI HTTP port, normally 80.",
-          "dhip_port": "DHIP/RPC2 port, normally 5000."
+          "dhip_port": "DHIP/RPC2 port, normally 5000.",
+          "password": "Leave empty to keep the current password."
         }
       }
     },
@@ -86,7 +88,7 @@
     "abort": {
       "already_configured": "This ARC alarm hub is already configured.",
       "reauth_successful": "Reauthentication successful.",
-      "wrong_account": "The reconfigured hub does not match this Dahua ARC config entry.",
+      "wrong_account": "The hub at this address is a different ARC than the one this entry was set up with.",
       "reconfigure_successful": "Reconfiguration successful."
     }
   },
@@ -103,19 +105,21 @@
         "data_description": {
           "periodic_resync_seconds": "300 seconds is recommended for normal operation.",
           "auto_area_match": "When enabled, only entities without an explicit area are considered. Disabling this does not remove previous area assignments.",
-          "enable_research_features": "Off by default. Enables experimental PIRCam snapshot camera, detector-test buttons, and LowRateWPAN polling/subscription diagnostics. Leave disabled for production wired-zone operation."
+          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation."
         }
       },
       "area_match": {
         "title": "Smart area matching",
-        "description": "Choose eligible areas and the minimum confidence. Existing entity-level area assignments are preserved.",
+        "description": "Choose eligible areas and the minimum confidence. Existing zone decisions are kept unless you choose to re-evaluate them, and manual Home Assistant area assignments are always preserved.",
         "data": {
           "area_match_areas": "Eligible areas",
-          "area_match_threshold": "Minimum confidence (%)"
+          "area_match_threshold": "Minimum confidence (%)",
+          "rematch_existing": "Re-evaluate zones that already have a decision"
         },
         "data_description": {
           "area_match_areas": "Only selected areas are considered.",
-          "area_match_threshold": "Higher values are more conservative. 78% is recommended."
+          "area_match_threshold": "Higher values are more conservative. 90% is recommended.",
+          "rematch_existing": "Off keeps every stored decision and only matches newly discovered zones. On recomputes all zones with the settings above; the preview shows the result before anything is saved."
         }
       },
       "area_preview": {
@@ -137,7 +141,7 @@
         "step": {
           "confirm": {
             "title": "Disable Dahua ARC research features",
-            "description": "This will turn off PIRCam / LowRateWPAN research tools for this config entry and reload the integration. The stable wired-zone path remains enabled."
+            "description": "Experimental PIRCam / LowRateWPAN research tools are enabled for this entry. They are not a reliable motion path, and the detector-test buttons write to the ARC. This will turn them off for this config entry and reload the integration. The stable wired-zone path remains enabled."
           }
         },
         "abort": {
@@ -152,6 +156,122 @@
     "inventory_error": {
       "title": "Dahua ARC extended inventory collection failed",
       "description": "The production input-state path may still work, but extended inventory collection reported: {error}"
+    },
+    "serial_mismatch": {
+      "title": "A different Dahua ARC answers at {host}",
+      "description": "The ARC at {host} reports a different serial number than the one this integration entry was set up with, so it was not loaded to protect your existing entities and automations. If the hub moved to a new address, use **Reconfigure** to point the entry at the right address. If the ARC was replaced, add it as a new integration instead."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Connection"
+      },
+      "radio_connectivity": {
+        "name": "Connectivity"
+      },
+      "low_battery": {
+        "name": "Low battery"
+      },
+      "tamper": {
+        "name": "Tamper"
+      }
+    },
+    "sensor": {
+      "configured_zones": {
+        "name": "Exposed alarm inputs"
+      },
+      "meaningful_alarm_records": {
+        "name": "Physical alarm records"
+      },
+      "placeholder_alarm_records": {
+        "name": "Unused alarm table rows"
+      },
+      "paired_radio_devices": {
+        "name": "Paired radio devices"
+      },
+      "multiio_inputs": {
+        "name": "MultiIO wired inputs"
+      },
+      "non_multiio_alarm_inputs": {
+        "name": "Wireless primary sensors"
+      },
+      "config_namespaces": {
+        "name": "Discovered config namespaces"
+      },
+      "inventory_configs": {
+        "name": "Alarm-related config tables"
+      },
+      "rpc_services": {
+        "name": "RPC services discovered"
+      },
+      "rpc_services_with_methods": {
+        "name": "RPC services enumerated"
+      },
+      "pircam_candidate_methods": {
+        "name": "PIR-camera candidate RPC methods"
+      },
+      "alarm_input_slots": {
+        "name": "Alarm input slots"
+      },
+      "alarm_output_slots": {
+        "name": "Alarm output slots"
+      },
+      "alarm_output_state_records": {
+        "name": "Alarm output state records"
+      },
+      "event_codes_observed": {
+        "name": "Event codes observed"
+      },
+      "all_events_observed": {
+        "name": "All events observed"
+      },
+      "dhip_generation": {
+        "name": "DHIP generation"
+      },
+      "reconnects": {
+        "name": "DHIP reconnects"
+      },
+      "realtime_events": {
+        "name": "Realtime events received"
+      },
+      "duplicate_events": {
+        "name": "Duplicate events"
+      },
+      "snapshot_corrections": {
+        "name": "Snapshot corrections"
+      },
+      "reconnect_corrections": {
+        "name": "Reconnect corrections"
+      },
+      "periodic_corrections": {
+        "name": "Periodic corrections"
+      },
+      "stale_snapshot_rejects": {
+        "name": "Stale snapshot rejects"
+      },
+      "last_alarm_event_time": {
+        "name": "Last alarm event time"
+      },
+      "last_frame_time": {
+        "name": "Last DHIP frame time"
+      },
+      "last_realtime_error": {
+        "name": "Last realtime error"
+      }
+    },
+    "camera": {
+      "latest_snapshot": {
+        "name": "Latest snapshot"
+      }
+    },
+    "button": {
+      "start_detector_test": {
+        "name": "Start detector test"
+      },
+      "stop_detector_test": {
+        "name": "Stop detector test"
+      }
     }
   }
 }

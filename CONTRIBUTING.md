@@ -31,18 +31,22 @@ The integration targets Home Assistant 2026.9+ and Python 3.14.
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m compileall -q custom_components/dahua_arc tests
-ruff check custom_components/dahua_arc tests scripts
+ruff check custom_components/dahua_arc tests scripts      # includes security (S) rules
 ruff format --check custom_components/dahua_arc tests scripts
-ruff check --select S --ignore S101,S110,S324 custom_components/dahua_arc scripts
-
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p pytest_asyncio.plugin \
-  tests/test_state_engine.py tests/test_area_assignment.py
-
-python -m pytest tests/ha --cov=custom_components/dahua_arc --cov-report=term-missing
+python -m pytest --cov --cov-report=term-missing          # enforces the coverage floor
 python scripts/check_package.py
 ```
 
-The repository CI also runs Hassfest and HACS validation.
+The repository CI also runs Hassfest and HACS validation. Home Assistant 2026.9 requires Python 3.14.2 or newer.
+
+## Code layout
+
+- `protocol/` — the Home Assistant-independent CGI/DHIP engine (topology discovery, snapshots, state engine, realtime stream). It must never import `homeassistant`; a test enforces this.
+- `research/` — opt-in PIRCam / LowRateWPAN features, constructed only when research mode is enabled.
+- `vendor/dahua/` — the vendored DHIP transport. Use its public methods (`call`, `send_request`, `recv_fragmented_json`, …) instead of private attributes.
+- `hub.py` — owns the connections and threads; `entity.py` plus the platform modules form the Home Assistant adapter.
+
+Tests live in `tests/`: pure protocol tests, `tests/fake_arc.py` (an in-process fake ARC used for end-to-end hub tests), and `tests/ha/` for Home Assistant integration tests built on `tests/hub_factory.py`.
 
 ## Protocol and hardware evidence
 
@@ -97,6 +101,16 @@ Before opening a PR:
 6. Confirm that existing entity IDs and user area choices are preserved unless the PR explicitly includes a tested migration.
 
 Small documentation-only changes do not need protocol evidence.
+
+## Version history
+
+The first public release is 0.1.0. Before that the integration went through private builds numbered v0.1 to v0.6 (config-entry versions 1 to 5), and some code still refers to them:
+
+- entries keyed by `host:dhip_port` instead of the ARC serial (pre-v0.6),
+- the v0.3 inventory build, which exposed unused `Alarm[]` template rows and peripherals as opening sensors; setup removes only those entities, judged from protocol fields,
+- MultiIO device identifiers from v0.1 to v0.3.
+
+These paths keep existing installations working and must not be removed without a tested migration.
 
 ## Release discipline
 

@@ -9,18 +9,16 @@ realtime event codes observed by the integration.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
-import struct
 import threading
 from collections import Counter, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
-from .vendor.dahua import DHIPTransport, const
+from ..vendor.dahua import DHIPTransport
+from .util import bool_value, safe_int, timestamp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +27,7 @@ CONFIG_GET_METHOD = "configManager.getConfig"
 CHANNEL_STATE_METHOD = "AlarmRegion.getChannelsState"
 SERVICE_LIST_METHOD = "system.listService"
 
-# v0.4.1 research build: discover the local RPC surface used by Dahua
+# Research mode only: discover the local RPC surface used by Dahua
 # AirShield PIR-cameras without executing any unknown methods. Public NetSDK
 # structures show that a PIR-camera snapshot test is an accessory-control
 # operation and that completion is reported through a ManualTest event. The
@@ -54,9 +52,21 @@ _METHOD_KEYWORDS = (
     "visual",
     "verify",
 )
-_RESEARCH_CONFIG_NAMES = {
+# Tables the production path needs: the Alarm[] family, Dahua area
+# (subsystem) assignments for smart area matching, and the AirFly device map
+# that provides radio models, serials and repeater topology.
+_PRODUCTION_CONFIG_NAMES = {
+    "Alarm",
+    "AlarmIn",
+    "AlarmOut",
+    "AlarmSubSystem",
     "_AirFlyDeviceMap_",
+}
+# Tables read only in research mode. Several can hold cloud, record or
+# communication settings that normal users do not need in diagnostics.
+_RESEARCH_CONFIG_NAMES = {
     "AirFly",
+    "CommGlobal",
     "AlarmRecord",
     "ARCEventsRecord",
     "_TapedEventManager_",
@@ -88,60 +98,88 @@ _CONFIG_KEYWORDS = (
     "radar",
     "rf",
 )
-_EXPLICIT_CONFIG_NAMES = {"Alarm", "AlarmIn", "AlarmOut", "CommGlobal"}
 
-# Fields that can uniquely identify a real installation.  Diagnostics keep
-# topology/name information because it is needed for reverse engineering, but
-# serial-like values are redacted.
+# Fields that can uniquely identify a real installation or its owner.
+# Diagnostics keep topology/name information because it is needed for
+# reverse engineering, but identifiers, credentials and contact details are
+# redacted. Keys are compared after removing "_"/"-" and lower-casing.
 _SENSITIVE_KEYS = {
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "serial",
-    "serialno",
-    "serialnumber",
     "sn",
     "uuid",
     "mac",
     "macaddress",
     "imei",
     "imsi",
+    "iccid",
     "key",
+    "psk",
+    "ssid",
+    "user",
+    "username",
     "userid",
+    "account",
+    "accountid",
+    "nickname",
     "parentnodeid",
     "nodeid",
     "airflyid",
+    "ip",
+    "ipaddr",
+    "ipaddress",
+    "ipv4",
+    "ipv6",
+    "host",
+    "hostname",
+    "gateway",
+    "dns",
+    "dns1",
+    "dns2",
+    "domain",
+    "url",
+    "latitude",
+    "longitude",
+    "lat",
+    "lng",
+    "lon",
+    "gps",
 }
+# Any key containing one of these fragments is redacted as well, e.g.
+# WifiPassword, SerialNo, AccessToken, PhoneNumber, EmailAddress.
+_SENSITIVE_KEY_FRAGMENTS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "serial",
+    "email",
+    "phone",
+    "mobile",
+    "telephone",
+    "cookie",
+    "credential",
+    "privatekey",
+    "cloudid",
+)
+REDACTED = "**REDACTED**"
 
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def _safe_int(value: Any, default: int | None = None) -> int | None:
-    try:
-        return int(value)
-    except TypeError, ValueError:
-        return default
-
-
-def _bool_value(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() == "true"
+def _key_is_sensitive(key: str) -> bool:
+    normalized = key.replace("_", "").replace("-", "").lower()
+    return normalized in _SENSITIVE_KEYS or any(
+        fragment in normalized for fragment in _SENSITIVE_KEY_FRAGMENTS
+    )
 
 
 def redact_sensitive(value: Any, key: str | None = None) -> Any:
     """Recursively redact hardware/account identifiers while preserving shape."""
+    if key is not None and _key_is_sensitive(key):
+        return REDACTED
     normalized_key = key.replace("_", "").lower() if key is not None else None
-    if normalized_key in _SENSITIVE_KEYS:
-        return "**REDACTED**"
     # Event OperatorInfo can contain a phone number, nickname and cloud user id.
     # Keep the object shape but never include personal operator identity in
     # downloadable diagnostics.
     if normalized_key == "operatorinfo" and isinstance(value, dict):
-        return {str(k): "**REDACTED**" for k in value}
+        return {str(k): REDACTED for k in value}
     if isinstance(value, dict):
         return {str(k): redact_sensitive(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
@@ -161,9 +199,9 @@ def record_is_physical(cfg: dict[str, str]) -> bool:
     """
     sense = str(cfg.get("SenseMethod", "")).strip()
     name = str(cfg.get("Name", "")).strip()
-    level1 = _safe_int(cfg.get("Level1"), -1)
-    level2 = _safe_int(cfg.get("Level2"), -1)
-    slot = _safe_int(cfg.get("Slot"), -1)
+    level1 = safe_int(cfg.get("Level1"), -1)
+    level2 = safe_int(cfg.get("Level2"), -1)
+    slot = safe_int(cfg.get("Slot"), -1)
     topology_present = any(
         value is not None and value >= 0 for value in (level1, level2, slot)
     )
@@ -177,22 +215,17 @@ def record_is_physical(cfg: dict[str, str]) -> bool:
     # other Dahua ARC families to surface legitimately configured local inputs.
     generic_name = bool(re.fullmatch(r"Zone\d+", name, flags=re.IGNORECASE))
     return (
-        bool(_bool_value(cfg.get("Enable", False)))
+        bool_value(cfg.get("Enable", False))
         and topology_present
         and bool(name)
         and not generic_name
     )
 
 
-def record_is_meaningful(cfg: dict[str, str]) -> bool:
-    """Compatibility alias: meaningful now means a real physical record."""
-    return record_is_physical(cfg)
-
-
 def classify_alarm_record(cfg: dict[str, str]) -> str:
     """Classify a physical ARC record using protocol fields before label text."""
     sense = str(cfg.get("SenseMethod", ""))
-    level2 = _safe_int(cfg.get("Level2"))
+    level2 = safe_int(cfg.get("Level2"))
     text = " ".join(
         str(cfg.get(key, ""))
         for key in ("Name", "SenseMethod", "SensorType", "DefenceAreaType")
@@ -246,8 +279,25 @@ PRIMARY_SENSOR_CLASSES = frozenset(
 )
 
 
-def is_primary_sensor_record(cfg: dict[str, str]) -> bool:
-    return classify_alarm_record(cfg) in PRIMARY_SENSOR_CLASSES
+# SenseMethods that identify peripherals (never primary alarm inputs) from
+# protocol fields alone, independent of the user-editable Name.
+PERIPHERAL_SENSE_METHODS = frozenset(
+    {"ProRepeater", "AlarmBell", "RemoteControl", "LEDKeypad"}
+)
+
+
+def record_is_peripheral_or_placeholder(cfg: dict[str, str]) -> bool:
+    """Return True when a record can never be a primary alarm input.
+
+    Unlike :func:`classify_alarm_record`, this only uses protocol fields, so a
+    user renaming a zone can never flip the answer.
+    """
+    if not record_is_physical(cfg):
+        return True
+    sense = str(cfg.get("SenseMethod", ""))
+    if sense in PERIPHERAL_SENSE_METHODS:
+        return True
+    return sense == "MultiIOTransmitterP" and safe_int(cfg.get("Level2")) == 0
 
 
 def summarize_alarm_records(records: dict[int, dict[str, str]]) -> dict[str, Any]:
@@ -319,7 +369,7 @@ class RadioDeviceInfo:
 
     @property
     def device_key(self) -> str:
-        """Stable HA device key, preserving the v0.1-v0.3 MultiIO IDs."""
+        """Stable HA device key, preserving the pre-public v0.1-v0.3 MultiIO IDs."""
         if self.is_multiio:
             return f"multiio:{self.level1}"
         return f"radio:{self.serial_hash or f'level1-{self.level1}'}"
@@ -345,7 +395,7 @@ def extract_zone_area_hints(inventory: dict[str, Any]) -> dict[int, str]:
         if not name:
             continue
         for idx in subsystem.get("Zone") or []:
-            parsed = _safe_int(idx)
+            parsed = safe_int(idx)
             if parsed is not None and parsed >= 0:
                 result.setdefault(parsed, name)
     return result
@@ -367,8 +417,8 @@ def extract_radio_devices(
     for idx, cfg in records.items():
         if not record_is_physical(cfg):
             continue
-        level1 = _safe_int(cfg.get("Level1"))
-        level2 = _safe_int(cfg.get("Level2"))
+        level1 = safe_int(cfg.get("Level1"))
+        level2 = safe_int(cfg.get("Level2"))
         if level1 is not None and level1 > 0 and level2 == 0:
             parents[level1] = (idx, cfg)
 
@@ -378,21 +428,21 @@ def extract_radio_devices(
         for item in device_map.get("DeviceInfo") or []:
             if not isinstance(item, dict) or not item.get("State"):
                 continue
-            addr = _safe_int(item.get("ShotAddr"))
+            addr = safe_int(item.get("ShotAddr"))
             if addr is not None and addr > 0:
                 by_addr[addr] = item
 
     serial_to_level: dict[str, int] = {}
     for level1, item in by_addr.items():
         serial = str(item.get("SN") or "").strip()
-        if serial and serial != "**REDACTED**":
+        if serial and serial != REDACTED:
             serial_to_level[serial] = level1
 
     result: dict[int, RadioDeviceInfo] = {}
     for level1, (alarm_index, cfg) in parents.items():
         meta = by_addr.get(level1, {})
         serial = str(meta.get("SN") or "").strip() or None
-        if serial == "**REDACTED**":
+        if serial == REDACTED:
             serial = None
         serial_hash = (
             hashlib.sha256(serial.encode("utf-8")).hexdigest()[:16] if serial else None
@@ -463,7 +513,7 @@ class EventCatalog:
         self.lock = threading.RLock()
         self.codes: dict[str, EventCodeInfo] = {}
         self.total_events = 0
-        self.created_at = _now()
+        self.created_at = timestamp()
         # Keep complete event ordering around Snapshot Test. Per-code samples
         # alone are not enough because a PIR-camera transfer may emit several
         # related events using the same code.
@@ -472,7 +522,7 @@ class EventCatalog:
     def observe(self, event: dict[str, Any]) -> None:
         code = str(event.get("Code") or "<no-code>")
         action = str(event.get("Action") or "")
-        index = _safe_int(event.get("Index"))
+        index = safe_int(event.get("Index"))
         data = event.get("Data") or event.get("data") or {}
         with self.lock:
             info = self.codes.setdefault(code, EventCodeInfo())
@@ -484,7 +534,7 @@ class EventCatalog:
                 info.indexes.add(index)
             if isinstance(data, dict):
                 info.data_keys.update(str(key) for key in data)
-            observed_at = _now()
+            observed_at = timestamp()
             info.last_seen = observed_at
             redacted = redact_sensitive(event)
             info.sample = redacted
@@ -494,6 +544,11 @@ class EventCatalog:
                     "event": redacted,
                 }
             )
+
+    def counts(self) -> tuple[int, int]:
+        """Return ``(distinct_codes, total_events)`` without building a summary."""
+        with self.lock:
+            return len(self.codes), self.total_events
 
     def summary(self) -> dict[str, Any]:
         with self.lock:
@@ -545,8 +600,12 @@ class InventoryRpcClient:
 
     def connect(self) -> None:
         transport = DHIPTransport(self.host, self.port, timeout=12)
-        transport.connect()
-        transport.login(self.username, self.password)
+        try:
+            transport.connect()
+            transport.login(self.username, self.password)
+        except Exception:
+            transport.close()
+            raise
         self.transport = transport
 
     def close(self) -> None:
@@ -556,69 +615,13 @@ class InventoryRpcClient:
             finally:
                 self.transport = None
 
-    def _recv_fragmented_json(self, request_id: int) -> dict[str, Any]:
-        transport = self.transport
-        if transport is None:
-            raise RuntimeError("Inventory DHIP transport unavailable")
-        chunks: list[bytes] = []
-        expected_len: int | None = None
-        expected_index = 0
-        for _ in range(128):
-            hdr = transport._recv_exact(const.HEADER_SIZE)
-            (
-                size,
-                magic,
-                _session,
-                response_id,
-                package_len,
-                package_index,
-                message_len,
-                data_len,
-            ) = struct.unpack(const.HEADER_FMT, hdr)
-            if size != const.HEADER_SIZE or magic != const.DHIP_MAGIC:
-                raise RuntimeError("Invalid DHIP inventory response header")
-            if response_id != request_id:
-                raise RuntimeError(
-                    f"Inventory request id mismatch: expected {request_id}, got {response_id}"
-                )
-            if package_index != expected_index:
-                raise RuntimeError(
-                    f"Inventory fragment order mismatch: expected {expected_index}, got {package_index}"
-                )
-            if data_len:
-                raise RuntimeError(
-                    "Unexpected binary payload in inventory RPC response"
-                )
-            if expected_len is None:
-                expected_len = message_len
-            elif expected_len != message_len:
-                raise RuntimeError(
-                    "Inventory response length changed between fragments"
-                )
-            chunks.append(transport._recv_exact(package_len))
-            raw = b"".join(chunks)
-            if expected_len is not None and len(raw) >= expected_len:
-                return json.loads(raw[:expected_len].decode("utf-8"))
-            expected_index += 1
-        raise RuntimeError("Inventory RPC response exceeded 128 fragments")
-
     def request(
         self, method: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         transport = self.transport
         if transport is None:
             raise RuntimeError("Inventory DHIP transport unavailable")
-        with transport._lock:
-            transport._id += 1
-            request_id = transport._id
-            payload: dict[str, Any] = {
-                "method": method,
-                "id": request_id,
-                "params": params or {},
-                "session": transport.session,
-            }
-            transport._send_frame(payload)
-            return self._recv_fragmented_json(request_id)
+        return transport.call(method, params or {}, fragmented=True, max_fragments=128)
 
     def safe_request(
         self, method: str, params: dict[str, Any] | None = None
@@ -629,12 +632,25 @@ class InventoryRpcClient:
         except Exception as exc:  # Discovery should never break the core integration.
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def collect(self, include_method_catalog: bool = True) -> dict[str, Any]:
+    def collect(
+        self,
+        include_method_catalog: bool = True,
+        include_research_tables: bool | None = None,
+    ) -> dict[str, Any]:
+        """Collect read-only inventory.
+
+        ``include_method_catalog`` enumerates every RPC service/method and is
+        expensive. ``include_research_tables`` additionally reads config tables
+        that are only useful for reverse engineering; it defaults to the value
+        of ``include_method_catalog``.
+        """
+        if include_research_tables is None:
+            include_research_tables = include_method_catalog
         if self.transport is None:
             self.connect()
 
         result: dict[str, Any] = {
-            "collected_at": _now(),
+            "collected_at": timestamp(),
             "system": {},
             "alarm_rpc": {},
             "config_members": [],
@@ -747,15 +763,18 @@ class InventoryRpcClient:
         else:
             members = []
 
-        # Explicit research tables are always requested first. Keyword-based
-        # discovery is additive and bounded, so a large config namespace can
-        # never crowd out PIR-camera/event/media tables we specifically need.
-        explicit = set(_EXPLICIT_CONFIG_NAMES) | set(_RESEARCH_CONFIG_NAMES)
+        # Production tables are always requested. In research mode the
+        # explicit research tables come next, then bounded keyword-based
+        # discovery, so a large config namespace can never crowd out the
+        # PIR-camera/event/media tables we specifically need.
+        explicit = set(_PRODUCTION_CONFIG_NAMES)
         keyword_selected: set[str] = set()
-        for name in members:
-            lower = name.casefold()
-            if any(keyword in lower for keyword in _CONFIG_KEYWORDS):
-                keyword_selected.add(name)
+        if include_research_tables:
+            explicit |= _RESEARCH_CONFIG_NAMES
+            for name in members:
+                lower = name.casefold()
+                if any(keyword in lower for keyword in _CONFIG_KEYWORDS):
+                    keyword_selected.add(name)
 
         ordered = sorted(explicit, key=str.casefold)
         ordered += [

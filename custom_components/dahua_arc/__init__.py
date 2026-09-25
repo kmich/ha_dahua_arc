@@ -1,3 +1,5 @@
+"""Dahua ARC local alarm-input integration."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +8,11 @@ from urllib.error import HTTPError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -36,18 +42,16 @@ from .const import (
     ISSUE_INVENTORY_ERROR,
     ISSUE_NO_PRIMARY_ZONES,
     ISSUE_RESEARCH_ENABLED,
+    ISSUE_SERIAL_MISMATCH,
     PLATFORMS,
 )
-from .inventory import RadioDeviceInfo
+from .entity import radio_identifier
+from .protocol.inventory import record_is_peripheral_or_placeholder
 from .vendor.dahua.exceptions import LoginError
 
 _LOGGER = logging.getLogger(__name__)
 
 DahuaArcConfigEntry = ConfigEntry[ArcHub]
-
-
-def _radio_identifier(uid: str, device: RadioDeviceInfo) -> tuple[str, str]:
-    return (DOMAIN, f"{uid}:{device.device_key}")
 
 
 def _register_radio_devices(
@@ -75,7 +79,7 @@ def _register_radio_devices(
 
         created[device.level1] = registry.async_get_or_create(
             config_entry_id=entry.entry_id,
-            identifiers={_radio_identifier(uid, device)},
+            identifiers={radio_identifier(uid, device)},
             name=device.name,
             manufacturer="Dahua",
             model=device.model or device.sense_method or "ARC radio device",
@@ -278,27 +282,35 @@ def _migrate_primary_entity_devices(
 def _cleanup_v03_phantom_zone_entities(
     hass: HomeAssistant, entry: DahuaArcConfigEntry, hub: ArcHub, uid: str
 ) -> None:
-    """Remove only the bogus ZoneXX entities created by the v0.3 inventory build."""
+    """Remove only the bogus ZoneXX entities created by the v0.3 inventory build.
+
+    v0.3 (a pre-public build) exposed unused Alarm[] template rows and
+    peripheral rows (sirens, keyfobs, keypads, repeaters, MultiIO boards) as
+    generic opening sensors. Only those are removed, judged from protocol
+    fields alone. A real input that is merely missing from this startup's
+    snapshot, or whose name changed, keeps its entity (it shows unavailable),
+    so user customizations and automations are never destroyed by a
+    transient discovery gap.
+    """
     registry = er.async_get(hass)
-    valid = {f"{uid}_zone_{idx}" for idx in hub.primary_zones}
     prefix = f"{uid}_zone_"
     removed = 0
 
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         unique_id = str(entity.unique_id or "")
-        if not unique_id.startswith(prefix) or unique_id in valid:
+        if not unique_id.startswith(prefix):
             continue
-        suffix = unique_id[len(prefix) :]
         try:
-            idx = int(suffix)
+            idx = int(unique_id[len(prefix) :])
         except ValueError:
             continue
-        # Only remove entities that are no longer valid primary sensors. This
-        # includes the v0.3 placeholder ZoneXX rows and peripheral rows that
-        # were incorrectly represented as generic opening sensors.
-        if idx not in hub.primary_zones:
-            registry.async_remove(entity.entity_id)
-            removed += 1
+        if idx in hub.primary_zones:
+            continue
+        cfg = hub.alarm_records.get(idx)
+        if cfg is None or not record_is_peripheral_or_placeholder(cfg):
+            continue
+        registry.async_remove(entity.entity_id)
+        removed += 1
 
     if removed:
         _LOGGER.warning(
@@ -347,6 +359,8 @@ def _update_repair_issues(
         ir.async_delete_issue(
             hass, DOMAIN, _entry_issue_id(entry, ISSUE_NO_PRIMARY_ZONES)
         )
+
+    ir.async_delete_issue(hass, DOMAIN, _entry_issue_id(entry, ISSUE_SERIAL_MISMATCH))
 
     if hub.inventory_error:
         ir.async_create_issue(
@@ -409,8 +423,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) -> 
         and entry.data.get(CONF_ARC_SERIAL)
         and hub.serial_number != entry.data[CONF_ARC_SERIAL]
     ):
+        # A different physical ARC answers at this address. Reauthentication
+        # cannot fix that, so fail permanently and explain it as a repair.
         await hass.async_add_executor_job(hub.stop)
-        raise ConfigEntryAuthFailed("ARC serial differs from configured device")
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            _entry_issue_id(entry, ISSUE_SERIAL_MISMATCH),
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_SERIAL_MISMATCH,
+            translation_placeholders={"host": str(entry.data[CONF_HOST])},
+        )
+        raise ConfigEntryError("A different Dahua ARC now answers at this address")
+
+    def _start_reauth() -> None:
+        hass.loop.call_soon_threadsafe(entry.async_start_reauth, hass)
+
+    # Credentials rejected after setup (password changed on the ARC): the hub
+    # stops every background login to avoid an account lockout; ask the user
+    # for new credentials.
+    hub.on_auth_failed = _start_reauth
+    if hub.auth_failed:
+        entry.async_start_reauth(hass)
 
     device_registry = dr.async_get(hass)
     device_registry.async_get_or_create(
@@ -421,7 +457,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) -> 
         model=hub.device_type,
         sw_version=hub.software_version,
         serial_number=hub.serial_number,
-        configuration_url=f"http://{hub.host}",
+        configuration_url=hub.configuration_url,
     )
 
     devices = _register_radio_devices(hass, entry, hub, uid)
@@ -447,8 +483,37 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) ->
     return unload_ok
 
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: DahuaArcConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting a device only when it is no longer part of the ARC.
+
+    The ARC itself, current radio devices and current MultiIO inputs are
+    recreated on every setup, so removing them would be pointless.
+    """
+    hub: ArcHub | None = getattr(entry, "runtime_data", None)
+    if hub is None:
+        return True
+    uid = entry.unique_id or entry.entry_id
+    current = {(DOMAIN, uid)}
+    current.update(radio_identifier(uid, d) for d in hub.radio_devices.values())
+    current.update((DOMAIN, f"{uid}:multiio:{level1}") for level1 in hub.parents)
+    current.update(
+        (DOMAIN, f"{uid}:zone:{index}")
+        for index, zone in hub.primary_zones.items()
+        if zone.is_multiio
+    )
+    return not (device_entry.identifiers & current)
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate older Dahua ARC config entries to the current flow version."""
+    """Migrate older Dahua ARC config entries to the current flow version.
+
+    Versions 1-4 were pre-public builds (see CONTRIBUTING.md "Version
+    history"). Their data is forward compatible; identity is preserved by
+    keeping the legacy host:port unique ID and recording the ARC serial on
+    the next successful setup.
+    """
     if entry.version < 5:
         hass.config_entries.async_update_entry(entry, version=5)
     return True

@@ -12,14 +12,15 @@ from homeassistant.helpers.device_registry import ChildDeviceInfo, DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .client import ArcHub, Zone
+from .client import ArcHub, RadioDeviceInfo, Zone
 from .const import DOMAIN
-from .inventory import RadioDeviceInfo
+from .entity import DahuaArcEntity, radio_device_info, root_device_info
 
 _LOGGER = logging.getLogger(__name__)
 _GLASS_BREAK_DEVICE_CLASS = getattr(
     BinarySensorDeviceClass, "GLASS_BREAK", BinarySensorDeviceClass.VIBRATION
 )
+PARALLEL_UPDATES = 0
 
 
 def _device_class(zone: Zone) -> BinarySensorDeviceClass | None:
@@ -42,28 +43,12 @@ def _device_class(zone: Zone) -> BinarySensorDeviceClass | None:
     return BinarySensorDeviceClass.OPENING
 
 
-def _radio_identifier(uid: str, device: RadioDeviceInfo) -> tuple[str, str]:
-    return (DOMAIN, f"{uid}:{device.device_key}")
-
-
-def _device_info_for_radio(
-    hub: ArcHub, uid: str, device: RadioDeviceInfo
-) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={_radio_identifier(uid, device)},
-        name=device.name,
-        manufacturer="Dahua",
-        model=device.model or device.sense_method or "ARC radio device",
-        serial_number=device.serial,
-    )
-
-
 def _device_info_for_zone(
     hub: ArcHub, uid: str, zone: Zone
 ) -> DeviceInfo | ChildDeviceInfo:
-    child_id = getattr(hub, "child_device_ids", {}).get(zone.index)
+    child_id = hub.child_device_ids.get(zone.index)
     if zone.is_multiio and child_id:
-        parent = getattr(hub, "multiio_parent_ids", {}).get(zone.level1)
+        parent = hub.multiio_parent_ids.get(zone.level1)
         if parent:
             return ChildDeviceInfo(
                 identifiers={(DOMAIN, f"{uid}:zone:{zone.index}")},
@@ -72,15 +57,8 @@ def _device_info_for_zone(
             )
     radio = hub.radio_device_for_zone(zone)
     if radio is not None:
-        return _device_info_for_radio(hub, uid, radio)
-    return DeviceInfo(
-        identifiers={(DOMAIN, uid)},
-        name=hub.device_type,
-        manufacturer="Dahua",
-        model=hub.device_type,
-        sw_version=hub.software_version,
-        serial_number=hub.serial_number,
-    )
+        return radio_device_info(uid, radio)
+    return root_device_info(hub, uid)
 
 
 async def async_setup_entry(
@@ -115,60 +93,49 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class DahuaArcBase(BinarySensorEntity):
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-
-    def __init__(self, hub: ArcHub):
-        self.hub = hub
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-
-        def listener(indices: set[int] | None) -> None:
-            self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-
-        self.async_on_remove(self.hub.add_listener(listener))
-
-
-class DahuaArcConnectivity(DahuaArcBase):
-    _attr_name = "Connection"
+class DahuaArcConnectivity(DahuaArcEntity, BinarySensorEntity):
+    _attr_translation_key = "connection"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
-        super().__init__(hub)
-        uid = entry.unique_id or entry.entry_id
-        self._attr_unique_id = f"{uid}_connection"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, uid)},
-            name=hub.device_type,
-            manufacturer="Dahua",
-            model=hub.device_type,
-            sw_version=hub.software_version,
-            serial_number=hub.serial_number,
-            configuration_url=f"http://{hub.host}",
-        )
+        super().__init__(hub, entry)
+        self._attr_unique_id = f"{self._uid}_connection"
+        self._attr_device_info = root_device_info(hub, self._uid)
 
     @property
     def is_on(self) -> bool:
         return self.hub.available
 
 
-class DahuaArcZoneBinarySensor(DahuaArcBase):
+class DahuaArcZoneBinarySensor(DahuaArcEntity, BinarySensorEntity):
+    # Volatile or static diagnostic attributes that must not create a new
+    # recorder row on every change.
+    _unrecorded_attributes = frozenset(
+        {
+            "last_source",
+            "last_action",
+            "last_changed",
+            "raw_alarm_state",
+            "parent_serial",
+            "smart_area_match",
+            "smart_area_match_score",
+            "smart_area_match_reason",
+        }
+    )
+
     def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub], zone: Zone):
-        super().__init__(hub)
+        super().__init__(hub, entry)
         self.zone = zone
-        self.config_entry = entry
-        decision = getattr(hub, "area_decisions", {}).get(str(zone.index), {})
+        self._watched_indices = frozenset({zone.index})
+        decision = hub.area_decisions.get(str(zone.index), {})
         self._area_match_name = decision.get("area_id")
         self._area_match_score = decision.get("score")
         self._area_match_reason = decision.get("reason")
-        uid = entry.unique_id or entry.entry_id
-        self._attr_unique_id = f"{uid}_zone_{zone.index}"
+        self._attr_unique_id = f"{self._uid}_zone_{zone.index}"
         self._attr_name = zone.name
         self._attr_device_class = _device_class(zone)
-        self._attr_device_info = _device_info_for_zone(hub, uid, zone)
+        self._attr_device_info = _device_info_for_zone(hub, self._uid, zone)
 
     @property
     def is_on(self) -> bool | None:
@@ -205,7 +172,7 @@ class DahuaArcZoneBinarySensor(DahuaArcBase):
         }
 
 
-class DahuaArcRadioBase(DahuaArcBase):
+class DahuaArcRadioBase(DahuaArcEntity, BinarySensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
@@ -215,12 +182,14 @@ class DahuaArcRadioBase(DahuaArcBase):
         device: RadioDeviceInfo,
         suffix: str,
     ):
-        super().__init__(hub)
+        super().__init__(hub, entry)
         self.device = device
         self.zone = hub.zones.get(device.alarm_index)
-        uid = entry.unique_id or entry.entry_id
-        self._attr_unique_id = f"{uid}_{device.device_key.replace(':', '_')}_{suffix}"
-        self._attr_device_info = _device_info_for_radio(hub, uid, device)
+        self._watched_indices = frozenset({device.alarm_index})
+        self._attr_unique_id = (
+            f"{self._uid}_{device.device_key.replace(':', '_')}_{suffix}"
+        )
+        self._attr_device_info = radio_device_info(self._uid, device)
 
     @property
     def available(self) -> bool:
@@ -240,7 +209,7 @@ class DahuaArcRadioBase(DahuaArcBase):
 
 
 class DahuaArcRadioConnectivity(DahuaArcRadioBase):
-    _attr_name = "Connectivity"
+    _attr_translation_key = "radio_connectivity"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
     def __init__(
@@ -258,7 +227,7 @@ class DahuaArcRadioConnectivity(DahuaArcRadioBase):
 
 
 class DahuaArcRadioLowBattery(DahuaArcRadioBase):
-    _attr_name = "Low battery"
+    _attr_translation_key = "low_battery"
     _attr_device_class = BinarySensorDeviceClass.BATTERY
 
     def __init__(
@@ -276,7 +245,7 @@ class DahuaArcRadioLowBattery(DahuaArcRadioBase):
 
 
 class DahuaArcRadioTamper(DahuaArcRadioBase):
-    _attr_name = "Tamper"
+    _attr_translation_key = "tamper"
     _attr_device_class = BinarySensorDeviceClass.TAMPER
 
     def __init__(
