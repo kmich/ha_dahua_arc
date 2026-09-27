@@ -8,3 +8,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Pinned to match Home Assistant's camera component; bump alongside HA.
+      - dependency-name: PyTurboJPEG
