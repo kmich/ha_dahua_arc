@@ -108,6 +108,73 @@ def test_start_stream_events_and_stop(cgi_records) -> None:
     assert _wait(lambda: not _dahua_threads())
 
 
+def test_arm_events_and_arm_state_probe(cgi_records) -> None:
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = [{"Mode": "D"}]
+    arc.method_lists["alarmSubSystem"] = ["alarmSubSystem.getState"]
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    redraws: list[None] = []
+    hub.add_arm_listener(lambda: redraws.append(None))
+    with arc.patch():
+        try:
+            hub.start()
+            assert set(hub.arming.areas) == {0}
+            assert hub.arming.system_state() is None
+            for code, index in (
+                ("GlobalAreaArmModeChange", -1),
+                ("AreaArmModeChange", 0),
+            ):
+                arc.push_event(
+                    {
+                        "Action": "Pulse",
+                        "Code": code,
+                        "Index": index,
+                        "Data": {"Mode": "p1", "IsGlobal": True, "Profile": "Auto"},
+                    }
+                )
+            assert _wait(lambda: hub.arming.system_state() == "armed_home")
+            assert _wait(lambda: redraws == [None])
+            # Arm events are catalogued but never counted as zone events.
+            assert hub.engine.realtime_events_received == 0
+
+            hub.refresh_arm_state_probe()
+            probe = hub.diagnostics()["arm_state_probe"]
+            assert probe["configs"]["AreaArmMode"]["ok"] is True
+            assert probe["configs"]["DefenceStatus"]["ok"] is False
+            assert probe["method_lists"]["alarmSubSystem"] == [
+                "alarmSubSystem.getState"
+            ]
+            assert probe["method_lists"]["AlarmRegion"]["ok"] is False
+            # Introspection only: nothing discovered is ever called.
+            assert "alarmSubSystem.getState" not in arc.calls
+            assert hub.diagnostics()["arming"]["areas"][1]["raw_mode"] == "p1"
+        finally:
+            hub.stop()
+    assert arc.sockets == []
+
+
+def test_arm_state_probe_failure_is_recorded(cgi_records) -> None:
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with patch(
+        "custom_components.dahua_arc.hub.InventoryRpcClient.connect",
+        side_effect=OSError("unreachable"),
+    ):
+        hub.refresh_arm_state_probe()
+    assert hub.arm_state_probe["error"] == "OSError: unreachable"
+    assert not hub.auth_failed
+
+    with patch(
+        "custom_components.dahua_arc.hub.InventoryRpcClient.connect",
+        side_effect=LoginError("bad password"),
+    ):
+        hub.refresh_arm_state_probe()
+    assert hub.auth_failed
+    # No further logins once the ARC has rejected the credentials.
+    with patch("custom_components.dahua_arc.hub.InventoryRpcClient.connect") as connect:
+        hub.refresh_arm_state_probe()
+    connect.assert_not_called()
+
+
 def test_wrong_password_raises_login_error(cgi_records) -> None:
     arc = _arc(password="something-else")
     hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only")

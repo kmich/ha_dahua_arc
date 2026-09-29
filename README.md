@@ -10,7 +10,9 @@ In normal operation the integration is **read-only**: it never arms, disarms, tr
 - A 256-entry snapshot establishes state on startup and reconciles missed events. The engine handles fragmented snapshots, duplicate events, keepalive, reconnect, and stale-state rejection.
 - A liveness watchdog marks inputs unavailable and reconnects if the realtime stream goes silent for about two keepalive intervals (about two minutes), for example when the ARC loses power or its network cable is pulled. Stale state is never shown as live.
 - Paired wireless/radio devices remain physical Home Assistant devices. Each MultiIO input is a logical Home Assistant child device of its physical board on HA 2026.9+, allowing independent area placement.
-- The integration does **not** expose an alarm-control-panel entity: Dahua partition arm/disarm state and control are not verified.
+- Arm state is shown read-only, from the ARC's `AreaArmModeChange` events: an **Arm state** sensor for the whole system (`disarmed`, `armed_home`, `armed_away`, `armed_partial_2`, or `mixed` when areas differ) and a **<area> arm state** sensor for every enabled Dahua area. Attributes show whether an arm was forced past open zones and which zones were bypassed. A **Last arming failure** sensor records refused arm attempts and the open zones that caused them.
+- The ARC reports arm changes only, so arm-state sensors are **unknown** after Home Assistant starts or the ARC reconnects, until the next arm or disarm. Home (`p1`) and disarm (`D`) are verified on hardware; Away (`T`) and the second partial mode (`p2`) are not yet. An unrecognised mode leaves the state unknown and appears in diagnostics.
+- The integration does **not** expose an alarm-control-panel entity and cannot arm or disarm.
 - PIRCam / LowRateWPAN research tools are isolated behind `enable_research_features`, which defaults to **off**. Wireless PIR motion remains unverified.
 
 ## Installation
@@ -35,6 +37,7 @@ The detector-test buttons are the only feature that **writes** to the ARC: they 
 - If setup reports **Invalid authentication**, verify the local ARC credentials. Reauthentication updates the existing entry without replacing its entity IDs.
 - If the ARC password changes while Home Assistant is running, the integration stops all background logins immediately (to avoid locking the ARC account) and asks for new credentials through a reauthentication notification.
 - If an ARC is replaced, do not reconfigure an existing serial-bound entry to the replacement unit. Add it as a new integration after reviewing automations and areas. If a different ARC answers at the configured address, the entry is not loaded and a repair issue explains why.
+- Every diagnostics download re-reads the `AreaArmMode`/`DefenceStatus` tables and the arm-related RPC method names (`arm_state_probe`), a few read-only calls. Downloads taken while disarmed and while armed help find a current-state source so arm state can be known at startup.
 - If an input becomes unavailable, inspect the integration diagnostics for DHIP snapshot/realtime health (including watchdog disconnects) and wait for automatic reconnect; do not infer `off` from an unavailable entity.
 - If a real input disappears from the ARC, its entity is kept (shown unavailable) so customizations are not lost. Devices no longer paired with the ARC can be deleted from the device page.
 - If an auto-assigned area is unsuitable, change or clear it in Home Assistant. That manual choice will be preserved.

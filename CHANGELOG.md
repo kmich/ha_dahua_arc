@@ -6,6 +6,13 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
+### Added
+
+- Read-only arm state from the ARC's arm/disarm events: a system **Arm state** sensor, an **arm state** sensor per enabled Dahua area (with forced-arm and bypassed-zone attributes), and a **Last arming failure** sensor listing the open zones that refused an arm. States are unknown until the first arm or disarm after startup or a reconnect, because the ARC reports changes only.
+- Diagnostics always include the arm-state tracker and a fresh read of the candidate arm-state tables and arm-related RPC method names.
+
 ## [0.2.0] - 2026-09-25
 
 ### Fixed
@@ -61,6 +68,7 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kmich/ha_dahua_arc/releases/tag/v0.1.0

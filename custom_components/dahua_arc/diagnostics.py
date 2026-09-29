@@ -17,6 +17,9 @@ async def async_get_config_entry_diagnostics(
     # enabled the research features. The production path keeps diagnostics cheap.
     if getattr(entry.runtime_data, "enable_research_features", False):
         await hass.async_add_executor_job(entry.runtime_data.refresh_research_inventory)
+    # A few read-only reads that capture the arm-state tables as they are at
+    # download time, so a disarmed/armed pair of downloads can be compared.
+    await hass.async_add_executor_job(entry.runtime_data.refresh_arm_state_probe)
     return {
         "entry": async_redact_data(
             dict(entry.data), {CONF_HOST, CONF_USERNAME, CONF_PASSWORD, CONF_ARC_SERIAL}

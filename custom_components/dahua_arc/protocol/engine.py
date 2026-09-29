@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from .arming import ARM_EVENT_CODES, ArmingTracker
 from .models import Zone
 from .snapshot import SnapshotClient
 from .util import raw_to_active, safe_int, timestamp
@@ -24,9 +25,11 @@ class StateEngine:
         self,
         zones: dict[int, Zone],
         change_callback: Callable[[set[int]], None] | None = None,
+        arming: ArmingTracker | None = None,
     ):
         self.zones = zones
         self.change_callback = change_callback
+        self.arming = arming
         self.lock = threading.RLock()
         self.event_queue: queue.Queue[tuple[int, dict[str, Any]]] = queue.Queue()
         self.stop_event = threading.Event()
@@ -54,6 +57,10 @@ class StateEngine:
     def begin_generation(self, generation: int) -> None:
         with self.lock:
             self.current_generation = generation
+        # Arm changes are events only; any missed while detached would leave
+        # a stale arm state, so it is unknown again until the next change.
+        if self.arming is not None:
+            self.arming.invalidate()
 
     def enqueue_event(self, generation: int, event: dict[str, Any]) -> None:
         self.event_queue.put((generation, event))
@@ -149,6 +156,10 @@ class StateEngine:
 
     def _apply_event(self, event: dict[str, Any]) -> None:
         code = str(event.get("Code") or "")
+        if code in ARM_EVENT_CODES:
+            if self.arming is not None:
+                self.arming.apply_event(event)
+            return
         if code not in (EVENT_CODE, PIRCAM_EVENT_CODE):
             return
 
