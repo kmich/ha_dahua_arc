@@ -7,9 +7,11 @@ refused, for example because a contact is open. Areas are identified by the
 event ``Index``, which is the zero-based position in ``AlarmSubSystem``
 (``AreaId - 1``); the ``Abnormal`` zone detail uses the one-based ``AreaId``.
 
-The events only report changes. No current-state getter has been verified
-yet, so an area's state is unknown until its first change after the realtime
-stream (re)attaches.
+The events only report changes. The current state comes from the
+``AreaArmMode`` config table (``Areas[index].Mode``), read whenever the
+realtime stream (re)attaches and on every periodic resync. Like zone
+snapshots, a table read never overrides an arm event that arrived after the
+read began.
 """
 
 from __future__ import annotations
@@ -44,8 +46,8 @@ ARMED_AWAY = "armed_away"
 ARMED_PARTIAL_2 = "armed_partial_2"
 MIXED = "mixed"
 
-# Dahua arm-mode codes. "D" and "p1" (Home/Stay) are confirmed on ARC3800H
-# hardware; "T" (total/Away) and "p2" follow Dahua's naming and are not yet
+# Dahua arm-mode codes. "D", "p1" (Home/Stay) and "T" (total/Away) are
+# confirmed on ARC3800H hardware; "p2" follows Dahua's naming and is not yet
 # verified. An unrecognised code leaves the state unknown and is kept as the
 # raw mode for diagnostics.
 ARM_MODES = {
@@ -55,6 +57,9 @@ ARM_MODES = {
     "p2": ARMED_PARTIAL_2,
 }
 AREA_STATES = (DISARMED, ARMED_HOME, ARMED_AWAY, ARMED_PARTIAL_2)
+AREA_ARM_MODE_CONFIG = "AreaArmMode"
+SOURCE_EVENT = "event"
+SOURCE_TABLE = "AreaArmMode table"
 SYSTEM_STATES = (*AREA_STATES, MIXED)
 
 # One arm/disarm produces a burst of per-area events within about a second.
@@ -93,6 +98,21 @@ def parse_abnormal_zones(data: dict[str, Any]) -> list[dict[str, Any]]:
     return zones
 
 
+def parse_area_arm_modes(table: Any) -> dict[int, str]:
+    """Map area index -> raw mode from the ``AreaArmMode`` config table.
+
+    ``Areas`` has one row per ``AlarmSubSystem`` row, in the same order.
+    """
+    rows = table.get("Areas") if isinstance(table, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("AreaArmMode table has no Areas list")
+    modes: dict[int, str] = {}
+    for index, row in enumerate(rows):
+        if isinstance(row, dict) and row.get("Mode"):
+            modes[index] = str(row["Mode"])
+    return modes
+
+
 @dataclass(slots=True)
 class ArmFailure:
     at: str
@@ -110,6 +130,8 @@ class ArmArea:
     index: int
     name: str
     raw_mode: str | None = None
+    source: str | None = None
+    last_event_seq: int = 0
     profile: str | None = None
     trigger_mode: str | None = None
     changed_at: str | None = None
@@ -150,6 +172,12 @@ class ArmingTracker:
         self.unknown_area_events = 0
         self.unknown_modes: set[str] = set()
         self.invalidations = 0
+        self.event_sequence = 0
+        self.table_reads = 0
+        self.table_corrections = 0
+        self.table_stale_rejects = 0
+        self.last_table_read: str | None = None
+        self.last_table_error: str | None = None
         self._timer: threading.Timer | None = None
         self._pending_since: float | None = None
 
@@ -174,6 +202,51 @@ class ArmingTracker:
                 if area.state not in (None, DISARMED)
             ]
 
+    def watermark(self) -> int:
+        """Event sequence to pass to :meth:`apply_table` for a read begun now."""
+        with self.lock:
+            return self.event_sequence
+
+    def _note_mode(self, raw_mode: str | None) -> None:
+        if raw_mode is not None and raw_mode not in ARM_MODES:
+            if raw_mode not in self.unknown_modes:
+                _LOGGER.warning("Unrecognised ARC arm mode %r", raw_mode)
+            self.unknown_modes.add(raw_mode)
+
+    def apply_table(self, modes: dict[int, str], watermark: int) -> None:
+        """Apply current modes read from the ``AreaArmMode`` table.
+
+        An area whose arm event arrived after ``watermark`` keeps the event's
+        state: the table read may predate it.
+        """
+        changed = False
+        with self.lock:
+            self.table_reads += 1
+            self.last_table_read = timestamp()
+            self.last_table_error = None
+            for index, area in self.areas.items():
+                raw_mode = modes.get(index)
+                if raw_mode is None:
+                    continue
+                if area.last_event_seq > watermark:
+                    self.table_stale_rejects += 1
+                    continue
+                self._note_mode(raw_mode)
+                if area.raw_mode == raw_mode:
+                    continue
+                if area.raw_mode is not None:
+                    # A known state that was wrong: an event was missed.
+                    self.table_corrections += 1
+                area.raw_mode = raw_mode
+                area.source = SOURCE_TABLE
+                changed = True
+        if changed:
+            self._schedule_notify()
+
+    def table_failed(self, error: str) -> None:
+        with self.lock:
+            self.last_table_error = error
+
     def invalidate(self) -> None:
         """Forget arm states: events may have been missed while detached."""
         changed = False
@@ -181,6 +254,7 @@ class ArmingTracker:
             for area in self.areas.values():
                 if area.raw_mode is not None:
                     area.raw_mode = None
+                    area.source = None
                     changed = True
             self.invalidations += 1
         if changed:
@@ -201,10 +275,7 @@ class ArmingTracker:
 
         with self.lock:
             self.events_received += 1
-            if raw_mode is not None and raw_mode not in ARM_MODES:
-                if raw_mode not in self.unknown_modes:
-                    _LOGGER.warning("Unrecognised ARC arm mode %r", raw_mode)
-                self.unknown_modes.add(raw_mode)
+            self._note_mode(raw_mode)
 
             if code == GLOBAL_ARM_EVENT:
                 self.last_global_change = {
@@ -240,7 +311,10 @@ class ArmingTracker:
                     if not data.get("IsGlobal"):
                         self.last_failure = area.last_failure
                 else:
+                    self.event_sequence += 1
+                    area.last_event_seq = self.event_sequence
                     area.raw_mode = raw_mode
+                    area.source = SOURCE_EVENT
                     area.profile = data.get("Profile")
                     area.trigger_mode = trigger_mode
                     area.changed_at = now
@@ -306,6 +380,11 @@ class ArmingTracker:
                 "unknown_area_events": self.unknown_area_events,
                 "unknown_modes": sorted(self.unknown_modes),
                 "invalidations": self.invalidations,
+                "table_reads": self.table_reads,
+                "table_corrections": self.table_corrections,
+                "table_stale_rejects": self.table_stale_rejects,
+                "last_table_read": self.last_table_read,
+                "last_table_error": self.last_table_error,
                 "last_global_change": self.last_global_change,
                 "last_failure": self._failure_dict(self.last_failure),
                 "areas": {
@@ -313,6 +392,7 @@ class ArmingTracker:
                         "name": area.name,
                         "state": area.state,
                         "raw_mode": area.raw_mode,
+                        "source": area.source,
                         "profile": area.profile,
                         "trigger_mode": area.trigger_mode,
                         "changed_at": area.changed_at,

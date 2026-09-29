@@ -13,6 +13,7 @@ from .files import extract_download_length, extract_embedded_jpeg, split_json_pr
 from .util import keepalive_delay, safe_int, timestamp
 
 SNAPSHOT_METHOD = "AlarmRegion.getChannelsState"
+CONFIG_GET_METHOD = "configManager.getConfig"
 
 
 class SnapshotClient:
@@ -141,6 +142,27 @@ class SnapshotClient:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 self._close_locked()
                 raise
+
+    def read_config(self, name: str) -> Any:
+        """Read one ``configManager.getConfig`` table on the snapshot session."""
+        with self.lock:
+            try:
+                if self.transport is None:
+                    self._connect_locked()
+                transport = self.transport
+                if transport is None:
+                    raise RuntimeError("Snapshot transport unavailable")
+                response = transport.call(
+                    CONFIG_GET_METHOD, {"name": name}, fragmented=True
+                )
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self._close_locked()
+                raise
+        # A refused read is an answer, not a broken session: keep it open.
+        if not response.get("result"):
+            raise RuntimeError(f"{name} read failed: {response.get('error')}")
+        return (response.get("params") or {}).get("table")
 
     def download_file(
         self,

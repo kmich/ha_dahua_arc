@@ -8,7 +8,13 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from .arming import ARM_EVENT_CODES, ArmingTracker
+from ..vendor.dahua.exceptions import LoginError
+from .arming import (
+    AREA_ARM_MODE_CONFIG,
+    ARM_EVENT_CODES,
+    ArmingTracker,
+    parse_area_arm_modes,
+)
 from .models import Zone
 from .snapshot import SnapshotClient
 from .util import raw_to_active, safe_int, timestamp
@@ -370,4 +376,30 @@ class Reconciler:
             _LOGGER.debug("Rejected %d stale snapshot values", len(skipped))
         if changed:
             _LOGGER.info("%s corrected %d ARC zone state(s)", source_kind, len(changed))
+        self._sync_arm_state()
         return changed
+
+    def _sync_arm_state(self) -> None:
+        """Read current arm modes; a failure leaves them as they are.
+
+        Arm state is secondary to zone state: a failed read must not fail the
+        resync, so the realtime stream stays up and arm events still apply.
+        """
+        arming = self.engine.arming
+        if arming is None:
+            return
+        watermark = arming.watermark()
+        try:
+            modes = parse_area_arm_modes(
+                self.snapshot_client.read_config(AREA_ARM_MODE_CONFIG)
+            )
+        except LoginError:
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            # Every resync retries; only a new failure is worth a warning.
+            log = _LOGGER.debug if arming.last_table_error == error else _LOGGER.warning
+            arming.table_failed(error)
+            log("ARC arm-state read failed: %s", error)
+            return
+        arming.apply_table(modes, watermark)

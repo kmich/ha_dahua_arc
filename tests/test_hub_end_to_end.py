@@ -110,7 +110,7 @@ def test_start_stream_events_and_stop(cgi_records) -> None:
 
 def test_arm_events_and_arm_state_probe(cgi_records) -> None:
     arc = _arc()
-    arc.config_tables["AreaArmMode"] = [{"Mode": "D"}]
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
     arc.method_lists["alarmSubSystem"] = ["alarmSubSystem.getState"]
     hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
     redraws: list[None] = []
@@ -119,7 +119,9 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
         try:
             hub.start()
             assert set(hub.arming.areas) == {0}
-            assert hub.arming.system_state() is None
+            # Known before setup finishes: the attach resync reads the table.
+            assert hub.arming.system_state() == "disarmed"
+            assert hub.arming.areas[0].source == "AreaArmMode table"
             for code, index in (
                 ("GlobalAreaArmModeChange", -1),
                 ("AreaArmModeChange", 0),
@@ -133,7 +135,8 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
                     }
                 )
             assert _wait(lambda: hub.arming.system_state() == "armed_home")
-            assert _wait(lambda: redraws == [None])
+            assert hub.arming.areas[0].source == "event"
+            assert _wait(lambda: len(redraws) >= 1)
             # Arm events are catalogued but never counted as zone events.
             assert hub.engine.realtime_events_received == 0
 
@@ -148,6 +151,33 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
             # Introspection only: nothing discovered is ever called.
             assert "alarmSubSystem.getState" not in arc.calls
             assert hub.diagnostics()["arming"]["areas"][1]["raw_mode"] == "p1"
+        finally:
+            hub.stop()
+    assert arc.sockets == []
+
+
+def test_arm_state_table_resync_and_missing_table(cgi_records) -> None:
+    arc = _arc()  # no AreaArmMode table: the read is refused
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            # A refused read leaves arm state unknown but setup succeeds.
+            assert hub.available
+            assert hub.arming.system_state() is None
+            assert "AreaArmMode read failed" in hub.arming.last_table_error
+
+            # Armed while an event was missed: the next resync corrects it.
+            arc.config_tables["AreaArmMode"] = {"Areas": [{"Mode": "T"}]}
+            hub.reconciler.run("test resync", "periodic")
+            assert hub.arming.system_state() == "armed_away"
+            assert hub.arming.last_table_error is None
+            arc.config_tables["AreaArmMode"] = {"Areas": [{"Mode": "D"}]}
+            hub.reconciler.run("test resync", "periodic")
+            assert hub.arming.system_state() == "disarmed"
+            assert hub.arming.table_corrections == 1
+            # The session survived the refused read.
+            assert hub.snapshot_client.health()["successful_connections"] == 1
         finally:
             hub.stop()
     assert arc.sockets == []

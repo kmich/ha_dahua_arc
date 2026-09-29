@@ -258,10 +258,9 @@ def _failure_attributes(failure: ArmFailure | None) -> dict[str, object]:
 
 
 class DahuaArcArmEntity(DahuaArcEntity, SensorEntity):
-    """Arm state pushed by ARC arm/disarm events (read-only).
+    """Arm state from ARC arm/disarm events and the AreaArmMode table (read-only).
 
-    Unknown until the first arm/disarm after the realtime stream attaches:
-    the ARC reports changes only.
+    Unknown only while neither has reported since the realtime stream attached.
     """
 
     def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
