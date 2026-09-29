@@ -6,6 +6,11 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Read-only arm state from the ARC's arm/disarm events: a system **Arm state** sensor, an **arm state** sensor per enabled Dahua area (with forced-arm and bypassed-zone attributes), and a **Last arming failure** sensor listing the open zones that refused an arm. States are unknown until the first arm or disarm after startup or a reconnect, because the ARC reports changes only.
+- Diagnostics always include the arm-state tracker and a fresh read of the candidate arm-state tables and arm-related RPC method names.
+
 ## [0.2.0] - 2026-09-25
 
 ### Fixed

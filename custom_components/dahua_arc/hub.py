@@ -2,8 +2,9 @@
 
 CGI discovers the configured Alarm/MultiIO topology; one DHIP connection
 provides authoritative AlarmRegion.getChannelsState snapshots and a second
-DHIP connection streams AlarmInputSourceSignal events. Research-only features
-live in :mod:`.research` and are constructed only when explicitly enabled.
+DHIP connection streams AlarmInputSourceSignal and area arm/disarm events.
+Research-only features live in :mod:`.research` and are constructed only when
+explicitly enabled.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from .protocol.arming import ArmingTracker
 from .protocol.cgi import (
     discover_alarm_points,
     discover_multiio_parents,
@@ -26,6 +28,7 @@ from .protocol.inventory import (
     InventoryRpcClient,
     RadioDeviceInfo,
     classify_alarm_record,
+    extract_arm_areas,
     extract_radio_devices,
     extract_zone_area_hints,
     record_is_physical,
@@ -70,11 +73,14 @@ class ArcHub:
         self.initial_alarm_snapshot: list[dict[str, Any]] = []
         self.rpc_inventory: dict[str, Any] = {}
         self.research_refresh_inventory: dict[str, Any] = {}
+        self.arm_state_probe: dict[str, Any] = {}
         self.inventory_error: str | None = None
         self.area_hints: dict[int, str] = {}
         self.radio_devices: dict[int, RadioDeviceInfo] = {}
         self.event_catalog = EventCatalog()
         self._listeners: set[Callable[[set[int] | None], None]] = set()
+        self._arm_listeners: set[Callable[[], None]] = set()
+        self.arming: ArmingTracker | None = None
         self.snapshot_client: SnapshotClient | None = None
         self.engine: StateEngine | None = None
         self.reconciler: Reconciler | None = None
@@ -120,6 +126,22 @@ class ArcHub:
                 callback(indices)
             except Exception:
                 _LOGGER.exception("ARC listener failed")
+
+    def add_arm_listener(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a listener for arm-state changes (called on worker threads)."""
+        self._arm_listeners.add(callback)
+
+        def remove() -> None:
+            self._arm_listeners.discard(callback)
+
+        return remove
+
+    def _notify_arm(self) -> None:
+        for callback in tuple(self._arm_listeners):
+            try:
+                callback()
+            except Exception:
+                _LOGGER.exception("ARC arm listener failed")
 
     def _handle_auth_failure(self, exc: LoginError | None = None) -> None:
         """Stop every background login and ask HA to start reauthentication."""
@@ -258,6 +280,9 @@ class ArcHub:
             self.rpc_inventory, self.alarm_records, self.area_hints
         )
         self._static_summary = self._build_static_summary()
+        self.arming = ArmingTracker(
+            extract_arm_areas(self.rpc_inventory), self._notify_arm
+        )
 
         if self.enable_research_features:
             self.pircam = PirCamMedia(
@@ -278,7 +303,7 @@ class ArcHub:
                 self._notify,
             )
 
-        self.engine = StateEngine(self.zones, self._notify)
+        self.engine = StateEngine(self.zones, self._notify, self.arming)
         self.engine.start()
         self.reconciler = Reconciler(self.snapshot_client, self.engine)
         self.realtime = RealtimeClient(
@@ -365,6 +390,31 @@ class ArcHub:
         finally:
             client.close()
 
+    def refresh_arm_state_probe(self) -> None:
+        """Re-read candidate arm-state tables for the diagnostics download."""
+        if self.auth_failed:
+            return
+        client = InventoryRpcClient(
+            self.host, self.dhip_port, self.username, self.password
+        )
+        try:
+            client.connect()
+            self.arm_state_probe = client.collect_arm_state_probe()
+        except LoginError as exc:
+            self.arm_state_probe = {
+                "collected_at": timestamp(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            self._handle_auth_failure(exc)
+        except Exception as exc:
+            self.arm_state_probe = {
+                "collected_at": timestamp(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            _LOGGER.warning("ARC arm-state probe failed: %s", exc)
+        finally:
+            client.close()
+
     def _periodic_loop(self) -> None:
         while not self._periodic_stop.wait(self.periodic_resync_seconds):
             try:
@@ -432,6 +482,8 @@ class ArcHub:
             "research_refresh_inventory": redact_sensitive(
                 self.research_refresh_inventory
             ),
+            "arming": self.arming.diagnostics() if self.arming else None,
+            "arm_state_probe": redact_sensitive(self.arm_state_probe),
             "event_catalog": self.event_catalog.summary(),
             "wpan_research": (
                 self.wpan_research.diagnostics()
@@ -494,6 +546,8 @@ class ArcHub:
             self.realtime.stop()
         if self.engine is not None:
             self.engine.stop()
+        if self.arming is not None:
+            self.arming.stop()
         if self.snapshot_client is not None:
             self.snapshot_client.close()
 

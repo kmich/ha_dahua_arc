@@ -80,6 +80,10 @@ _RESEARCH_CONFIG_NAMES = {
     "DefenceStatus",
     "DefenceStatusOut",
 }
+# Read on every diagnostics download (not only in research mode) to locate a
+# current arm-state source; see InventoryRpcClient.collect_arm_state_probe.
+ARM_STATE_CONFIG_NAMES = ("AreaArmMode", "DefenceStatus", "DefenceStatusOut")
+ARM_STATE_SERVICES = ("alarm", "alarmSubSystem", "alarmSubregion", "AlarmRegion")
 
 # Only read configuration families that can reasonably describe alarm hub
 # devices.  We intentionally do not dump the entire configuration database.
@@ -398,6 +402,22 @@ def extract_zone_area_hints(inventory: dict[str, Any]) -> dict[int, str]:
             parsed = safe_int(idx)
             if parsed is not None and parsed >= 0:
                 result.setdefault(parsed, name)
+    return result
+
+
+def extract_arm_areas(inventory: dict[str, Any]) -> dict[int, str]:
+    """Map arm-event area index (``AreaId - 1``) -> enabled Dahua area name."""
+    table = _candidate_table(inventory, "AlarmSubSystem")
+    result: dict[int, str] = {}
+    if not isinstance(table, list):
+        return result
+    for position, subsystem in enumerate(table):
+        if not isinstance(subsystem, dict) or not subsystem.get("Enable"):
+            continue
+        area_id = safe_int(subsystem.get("AreaId"))
+        index = area_id - 1 if area_id is not None and area_id > 0 else position
+        name = str(subsystem.get("Name") or "").strip()
+        result[index] = name or f"Area {index + 1}"
     return result
 
 
@@ -787,6 +807,33 @@ class InventoryRpcClient:
                 CONFIG_GET_METHOD, {"name": name}
             )
 
+        return result
+
+    def collect_arm_state_probe(self) -> dict[str, Any]:
+        """Read the candidate arm-state tables and arm-service method names.
+
+        Used by diagnostics to find a current-state source for arm/disarm,
+        which the realtime events only report as changes. ``listMethod`` is
+        introspection only; no discovered method is called.
+        """
+        if self.transport is None:
+            self.connect()
+        result: dict[str, Any] = {
+            "collected_at": timestamp(),
+            "configs": {},
+            "method_lists": {},
+        }
+        for name in ARM_STATE_CONFIG_NAMES:
+            result["configs"][name] = self.safe_request(
+                CONFIG_GET_METHOD, {"name": name}
+            )
+        for service in ARM_STATE_SERVICES:
+            listing = self.safe_request(f"{service}.listMethod")
+            result["method_lists"][service] = (
+                extract_method_names(listing["response"], service)
+                if listing.get("ok")
+                else listing
+            )
         return result
 
 

@@ -178,6 +178,28 @@
       }
     },
     "sensor": {
+      "arm_state": {
+        "name": "Arm state",
+        "state": {
+          "disarmed": "Disarmed",
+          "armed_home": "Armed home",
+          "armed_away": "Armed away",
+          "armed_partial_2": "Armed (partial 2)",
+          "mixed": "Mixed"
+        }
+      },
+      "area_arm_state": {
+        "name": "{area} arm state",
+        "state": {
+          "disarmed": "Disarmed",
+          "armed_home": "Armed home",
+          "armed_away": "Armed away",
+          "armed_partial_2": "Armed (partial 2)"
+        }
+      },
+      "last_arming_failure": {
+        "name": "Last arming failure"
+      },
       "configured_zones": {
         "name": "Exposed alarm inputs"
       },
