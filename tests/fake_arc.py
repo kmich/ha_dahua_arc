@@ -157,6 +157,8 @@ class FakeArc:
         self.config_tables = inventory or {}
         self.serial = serial
         self.calls: list[str] = []
+        # Service -> method names answered by "<service>.listMethod".
+        self.method_lists: dict[str, list[str]] = {}
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -228,6 +230,10 @@ class FakeArc:
             return {"result": True, "params": {"sn": self.serial}}, 1
         if method == "magicBox.getDeviceType":
             return {"result": True, "params": {"type": "ARC3800H"}}, 1
+        if method.endswith(".listMethod"):
+            methods = self.method_lists.get(method.removesuffix(".listMethod"))
+            if methods is not None:
+                return {"result": True, "params": {"method": methods}}, 1
         if method == "configManager.getConfig":
             table = self.config_tables.get(params.get("name"))
             if table is None:

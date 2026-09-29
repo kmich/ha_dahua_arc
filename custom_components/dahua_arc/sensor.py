@@ -17,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .client import ArcHub
 from .entity import DahuaArcEntity, root_device_info
+from .protocol.arming import AREA_STATES, SYSTEM_STATES, ArmArea, ArmFailure
 from .protocol.util import parse_timestamp
 
 # Diagnostic counters are read from memory. Polling them on a fixed interval
@@ -209,10 +210,18 @@ async def async_setup_entry(
     entry: ConfigEntry[ArcHub],
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    async_add_entities(
-        DahuaArcDiagnosticSensor(entry.runtime_data, entry, description)
+    hub = entry.runtime_data
+    entities: list[SensorEntity] = [
+        DahuaArcDiagnosticSensor(hub, entry, description)
         for description in DESCRIPTIONS
-    )
+    ]
+    if hub.arming is not None:
+        entities.append(DahuaArcSystemArmState(hub, entry))
+        entities.append(DahuaArcLastArmingFailure(hub, entry))
+        entities.extend(
+            DahuaArcAreaArmState(hub, entry, area) for area in hub.arming.areas.values()
+        )
+    async_add_entities(entities)
 
 
 class DahuaArcDiagnosticSensor(DahuaArcEntity, SensorEntity):
@@ -237,3 +246,121 @@ class DahuaArcDiagnosticSensor(DahuaArcEntity, SensorEntity):
     @property
     def available(self) -> bool:
         return self.entity_description.always_available or self.hub.available
+
+
+def _failure_attributes(failure: ArmFailure | None) -> dict[str, object]:
+    if failure is None:
+        return {"last_arming_failure": None, "last_arming_failure_open_zones": None}
+    return {
+        "last_arming_failure": failure.at,
+        "last_arming_failure_open_zones": [zone["zone"] for zone in failure.open_zones],
+    }
+
+
+class DahuaArcArmEntity(DahuaArcEntity, SensorEntity):
+    """Arm state pushed by ARC arm/disarm events (read-only).
+
+    Unknown until the first arm/disarm after the realtime stream attaches:
+    the ARC reports changes only.
+    """
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
+        super().__init__(hub, entry)
+        self._attr_device_info = root_device_info(hub, self._uid)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        def listener() -> None:
+            if self._listening:
+                self.hass.loop.call_soon_threadsafe(self._async_hub_updated)
+
+        self.async_on_remove(self.hub.add_arm_listener(listener))
+
+    @property
+    def available(self) -> bool:
+        return self.hub.available
+
+
+class DahuaArcSystemArmState(DahuaArcArmEntity):
+    _attr_translation_key = "arm_state"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _unrecorded_attributes = frozenset({"last_arming_failure_open_zones"})
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
+        super().__init__(hub, entry)
+        self._attr_unique_id = f"{self._uid}_arm_state"
+        self._attr_options = list(SYSTEM_STATES)
+
+    @property
+    def native_value(self) -> str | None:
+        return self.hub.arming.system_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        arming = self.hub.arming
+        return {
+            "armed_areas": arming.armed_areas(),
+            **_failure_attributes(arming.last_failure),
+        }
+
+
+class DahuaArcLastArmingFailure(DahuaArcArmEntity):
+    _attr_translation_key = "last_arming_failure"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _unrecorded_attributes = frozenset({"open_zones"})
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
+        super().__init__(hub, entry)
+        self._attr_unique_id = f"{self._uid}_last_arming_failure"
+
+    @property
+    def native_value(self):
+        failure = self.hub.arming.last_failure
+        return parse_timestamp(failure.at) if failure else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        failure = self.hub.arming.last_failure
+        if failure is None:
+            return {"requested_mode": None, "trigger": None, "open_zones": None}
+        return {
+            "requested_mode": failure.state or failure.raw_mode,
+            "trigger": failure.trigger_mode,
+            "open_zones": [
+                {"area": zone["area"], "zone": zone["zone"], "reason": zone["reason"]}
+                for zone in failure.open_zones
+            ],
+        }
+
+
+class DahuaArcAreaArmState(DahuaArcArmEntity):
+    _attr_translation_key = "area_arm_state"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _unrecorded_attributes = frozenset(
+        {"area_id", "dahua_mode", "bypassed_zones", "last_arming_failure_open_zones"}
+    )
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub], area: ArmArea):
+        super().__init__(hub, entry)
+        self.area = area
+        self._attr_unique_id = f"{self._uid}_area_{area.area_id}_arm_state"
+        self._attr_options = list(AREA_STATES)
+        self._attr_translation_placeholders = {"area": area.name}
+
+    @property
+    def native_value(self) -> str | None:
+        return self.area.state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        area = self.area
+        return {
+            "area_id": area.area_id,
+            "dahua_mode": area.raw_mode,
+            "forced": area.profile == "Force" if area.profile else None,
+            "bypassed_zones": [zone["zone"] for zone in area.bypassed_zones],
+            "trigger": area.trigger_mode,
+            "last_changed": area.changed_at,
+            **_failure_attributes(area.last_failure),
+        }

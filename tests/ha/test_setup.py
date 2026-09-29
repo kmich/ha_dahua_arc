@@ -169,6 +169,103 @@ async def test_platforms_create_expected_entities(hass: HomeAssistant) -> None:
     hub.stop.assert_called_once()
 
 
+async def test_arm_state_entities_follow_arm_events(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    hub = make_hub()
+    await _setup(hass, entry, hub)
+    system = _entity_id(hass, "sensor", f"{SERIAL}_arm_state")
+    kitchen = _entity_id(hass, "sensor", f"{SERIAL}_area_1_arm_state")
+    garage = _entity_id(hass, "sensor", f"{SERIAL}_area_2_arm_state")
+    failure = _entity_id(hass, "sensor", f"{SERIAL}_last_arming_failure")
+    # Disabled Dahua areas get no entity.
+    assert _entity_id(hass, "sensor", f"{SERIAL}_area_3_arm_state") is None
+    assert garage == "sensor.arc3800h_garage_arm_state"
+    assert hass.states.get(system).attributes["options"] == [
+        "disarmed",
+        "armed_home",
+        "armed_away",
+        "armed_partial_2",
+        "mixed",
+    ]
+    # The ARC reports changes only: unknown until the first one.
+    for entity_id in (system, kitchen, garage, failure):
+        assert hass.states.get(entity_id).state == "unknown"
+
+    def pulse(code: str, index: int, mode: str, **data) -> dict:
+        return {
+            "Action": "Pulse",
+            "Code": code,
+            "Index": index,
+            "Data": {"Mode": mode, "TriggerMode": "Remote", **data},
+        }
+
+    open_window = {
+        "detail": [
+            {
+                "Area": 2,
+                "AreaName": "Garage ",
+                "ZoneAbnormal": [
+                    {"Index": 11, "Name": "Garage Door", "Reason": "Open"}
+                ],
+            }
+        ]
+    }
+    events = [
+        pulse("GlobalArmingFailure", -1, "p1", IsGlobal=True, Abnormal=open_window),
+        pulse("GlobalAreaArmModeChange", -1, "p1", IsGlobal=True, Profile="Force"),
+        pulse("AreaArmModeChange", 0, "p1", IsGlobal=True, Profile="Auto"),
+        pulse(
+            "AreaArmModeChange",
+            1,
+            "p1",
+            IsGlobal=True,
+            Profile="Force",
+            Abnormal=open_window,
+        ),
+    ]
+
+    # Engine callbacks arrive from a worker thread.
+    def feed() -> None:
+        for event in events:
+            hub.engine._apply_event(event)
+
+    worker = threading.Thread(target=feed)
+    worker.start()
+    worker.join()
+    await hass.async_block_till_done()
+
+    assert hass.states.get(system).state == "armed_home"
+    assert hass.states.get(system).attributes["armed_areas"] == ["Kitchen", "Garage"]
+    garage_state = hass.states.get(garage)
+    assert garage_state.state == "armed_home"
+    assert garage_state.attributes["forced"] is True
+    assert garage_state.attributes["bypassed_zones"] == ["Garage Door"]
+    assert garage_state.attributes["dahua_mode"] == "p1"
+    assert hass.states.get(kitchen).attributes["forced"] is False
+    failure_state = hass.states.get(failure)
+    assert failure_state.state != "unknown"
+    assert failure_state.attributes["requested_mode"] == "armed_home"
+    assert failure_state.attributes["open_zones"] == [
+        {"area": "Garage", "zone": "Garage Door", "reason": "Open"}
+    ]
+
+    # A reconnect forgets the arm state: changes may have been missed.
+    worker = threading.Thread(target=hub.engine.begin_generation, args=(2,))
+    worker.start()
+    worker.join()
+    await hass.async_block_till_done()
+    assert hass.states.get(system).state == "unknown"
+    assert hass.states.get(garage).state == "unknown"
+
+    hub.realtime.connected = False
+    hub._notify(None)
+    await hass.async_block_till_done()
+    assert hass.states.get(system).state == "unavailable"
+    await hass.config_entries.async_unload(entry.entry_id)
+    # Unloaded entities stop listening for arm changes.
+    assert not hub._arm_listeners
+
+
 async def test_zone_event_updates_only_that_zone(hass: HomeAssistant) -> None:
     entry = _entry(hass)
     hub = make_hub()
@@ -335,7 +432,11 @@ async def test_diagnostics_redacts_connection_identity(hass: HomeAssistant) -> N
     entry = _entry(hass)
     hub = make_hub()
     entry.runtime_data = hub
-    result = await async_get_config_entry_diagnostics(hass, entry)
+    with patch.object(hub, "refresh_arm_state_probe") as probe:
+        result = await async_get_config_entry_diagnostics(hass, entry)
+    # The arm-state tables are re-read on every download, research mode or not.
+    probe.assert_called_once()
+    assert result["runtime"]["arming"]["areas"][1]["name"] == "Kitchen"
     text = str(result)
     assert "192.0.2.10" not in str(result["entry"])
     assert "admin" not in str(result["entry"])

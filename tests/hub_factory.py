@@ -11,12 +11,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from custom_components.dahua_arc.hub import ArcHub
+from custom_components.dahua_arc.protocol.arming import ArmingTracker
 from custom_components.dahua_arc.protocol.cgi import (
     discover_alarm_points,
     discover_multiio_parents,
 )
 from custom_components.dahua_arc.protocol.engine import StateEngine
 from custom_components.dahua_arc.protocol.inventory import (
+    extract_arm_areas,
     extract_radio_devices,
     extract_zone_area_hints,
 )
@@ -125,7 +127,13 @@ def inventory(serial: str = SERIAL) -> dict:
                 }
             ),
             "AlarmSubSystem": _rpc(
-                {"table": [{"Enable": True, "Name": "Kitchen", "Zone": [7]}]}
+                {
+                    "table": [
+                        {"AreaId": 1, "Enable": True, "Name": "Kitchen", "Zone": [7]},
+                        {"AreaId": 2, "Enable": True, "Name": "Garage ", "Zone": []},
+                        {"AreaId": 3, "Enable": False, "Name": "Room3", "Zone": []},
+                    ]
+                }
             ),
         },
     }
@@ -150,7 +158,12 @@ def make_hub(*, research: bool = False, serial: str = SERIAL) -> ArcHub:
     hub.radio_devices = extract_radio_devices(
         hub.rpc_inventory, hub.alarm_records, hub.area_hints
     )
-    hub.engine = StateEngine(hub.zones, hub._notify)  # never started: no thread
+    # Notify synchronously so tests need not wait for the burst debounce.
+    hub.arming = ArmingTracker(
+        extract_arm_areas(hub.rpc_inventory), hub._notify_arm, quiet_seconds=0
+    )
+    # Never started: no thread.
+    hub.engine = StateEngine(hub.zones, hub._notify, hub.arming)
     hub.engine.apply_snapshot(SNAPSHOT, "test", "initial", 0)
     hub.realtime = SimpleNamespace(
         connected=True,
