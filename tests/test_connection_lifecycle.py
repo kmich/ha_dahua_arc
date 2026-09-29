@@ -136,6 +136,28 @@ def test_snapshot_client_refuses_logins_after_auth_failure() -> None:
     transport.assert_not_called()
 
 
+def test_snapshot_config_read_failure_drops_the_session() -> None:
+    client = SnapshotClient("192.0.2.10", 5000, "admin", "test-only")
+    transport = Mock()
+    transport.call.side_effect = OSError("connection reset")
+    client.transport, client.connected = transport, True
+    with pytest.raises(OSError):
+        client.read_config("AreaArmMode")
+    # A broken session is closed so the next resync reconnects.
+    transport.close.assert_called_once()
+    assert client.transport is None
+    assert client.last_error == "OSError: connection reset"
+
+    # Refused by the ARC: the session is fine and stays open.
+    transport = Mock()
+    transport.call.return_value = {"result": False, "error": {"code": 1}}
+    client.transport, client.connected = transport, True
+    with pytest.raises(RuntimeError, match="AreaArmMode read failed"):
+        client.read_config("AreaArmMode")
+    assert client.transport is transport
+    transport.close.assert_not_called()
+
+
 def test_hub_periodic_resync_stops_on_login_error() -> None:
     hub = ArcHub("192.0.2.10", 80, 5000, "admin", "bad", periodic_resync_seconds=0)
     hub.reconciler = Mock()
