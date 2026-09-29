@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+import pytest
 from custom_components.dahua_arc.protocol.arming import (
     ARMED_AWAY,
     ARMED_HOME,
@@ -17,9 +18,11 @@ from custom_components.dahua_arc.protocol.arming import (
     MIXED,
     ArmingTracker,
     parse_abnormal_zones,
+    parse_area_arm_modes,
 )
-from custom_components.dahua_arc.protocol.engine import StateEngine
+from custom_components.dahua_arc.protocol.engine import Reconciler, StateEngine
 from custom_components.dahua_arc.protocol.inventory import extract_arm_areas
+from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
 
 AREAS = {0: "Living Room", 1: "Garage", 2: "Office"}
 
@@ -321,3 +324,121 @@ def test_extract_arm_areas_uses_area_id_and_skips_disabled() -> None:
 def test_extract_arm_areas_without_table() -> None:
     assert extract_arm_areas({}) == {}
     assert extract_arm_areas(_inventory(None)) == {}
+
+
+# AreaArmMode as read from an ARC3800H while armed Home: one row per
+# AlarmSubSystem row; unused rows carry no ArmTime.
+ARMED_HOME_TABLE = {
+    "Areas": [{"ArmTime": 0, "Mode": "p1"}] * 3 + [{"Mode": "D"}] * 2,
+    "SystemStatusCheck": {"Enable": True},
+}
+
+
+def test_parse_area_arm_modes() -> None:
+    assert parse_area_arm_modes(ARMED_HOME_TABLE) == {
+        0: "p1",
+        1: "p1",
+        2: "p1",
+        3: "D",
+        4: "D",
+    }
+    assert parse_area_arm_modes({"Areas": [{}, "x", {"Mode": "T"}]}) == {2: "T"}
+    for junk in (None, [], {"Areas": None}):
+        with pytest.raises(ValueError):
+            parse_area_arm_modes(junk)
+
+
+def test_table_sets_state_without_events() -> None:
+    tracker, notified = _tracker()
+    tracker.apply_table(parse_area_arm_modes(ARMED_HOME_TABLE), tracker.watermark())
+    assert tracker.system_state() == ARMED_HOME
+    assert tracker.areas[0].source == "AreaArmMode table"
+    # Rows beyond the enabled areas are ignored.
+    assert set(tracker.areas) == {0, 1, 2}
+    assert notified == [None]
+    assert tracker.table_corrections == 0
+
+    # Same state again: no redraw.
+    tracker.apply_table({0: "p1", 1: "p1", 2: "p1"}, tracker.watermark())
+    assert notified == [None]
+    assert tracker.table_reads == 2
+
+
+def test_table_never_overrides_a_newer_event() -> None:
+    tracker, _ = _tracker()
+    watermark = tracker.watermark()  # the read starts here...
+    tracker.apply_event(_event("AreaArmModeChange", 1, "D"))  # ...an event lands
+    tracker.apply_table({0: "p1", 1: "p1", 2: "p1"}, watermark)
+    assert tracker.areas[0].state == ARMED_HOME
+    assert tracker.areas[1].state == DISARMED
+    assert tracker.areas[1].source == "event"
+    assert tracker.table_stale_rejects == 1
+    # A later read is newer than that event and applies.
+    tracker.apply_table({1: "p1"}, tracker.watermark())
+    assert tracker.areas[1].state == ARMED_HOME
+    assert tracker.table_corrections == 1
+
+
+def test_table_unknown_mode_is_recorded() -> None:
+    tracker, _ = _tracker()
+    tracker.apply_table({0: "p7"}, tracker.watermark())
+    assert tracker.areas[0].raw_mode == "p7"
+    assert tracker.areas[0].state is None
+    assert tracker.unknown_modes == {"p7"}
+
+
+def test_invalidate_clears_table_source() -> None:
+    tracker, _ = _tracker()
+    tracker.apply_table({0: "D", 1: "D", 2: "D"}, tracker.watermark())
+    tracker.invalidate()
+    assert tracker.areas[0].source is None
+    assert tracker.system_state() is None
+
+
+class _TableClient:
+    """Snapshot client stand-in: an empty zone snapshot plus a config table."""
+
+    def __init__(self, table: Any = None, error: Exception | None = None):
+        self.table, self.error = table, error
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return []
+
+    def read_config(self, name: str) -> Any:
+        assert name == "AreaArmMode"
+        if self.error is not None:
+            raise self.error
+        return self.table
+
+
+def test_reconciler_syncs_arm_state_after_zone_snapshot() -> None:
+    tracker, _ = _tracker()
+    engine = StateEngine({}, arming=tracker)
+    Reconciler(_TableClient(ARMED_HOME_TABLE), engine).run("attach", "initial")
+    assert tracker.system_state() == ARMED_HOME
+    assert tracker.last_table_read is not None
+
+
+def test_reconciler_arm_read_failure_does_not_fail_resync() -> None:
+    tracker, _ = _tracker()
+    engine = StateEngine({}, arming=tracker)
+    client = _TableClient(error=RuntimeError("AreaArmMode read failed: 1"))
+    assert Reconciler(client, engine).run("attach", "initial") == []
+    assert tracker.system_state() is None
+    assert tracker.last_table_error == "RuntimeError: AreaArmMode read failed: 1"
+
+    client = _TableClient({"Areas": "junk"})
+    Reconciler(client, engine).run("attach", "initial")
+    assert tracker.last_table_error.startswith("ValueError")
+
+
+def test_reconciler_arm_read_login_error_propagates() -> None:
+    engine = StateEngine({}, arming=_tracker()[0])
+    client = _TableClient(error=LoginError("rejected"))
+    with pytest.raises(LoginError):
+        Reconciler(client, engine).run("attach", "initial")
+
+
+def test_reconciler_without_tracker_skips_arm_read() -> None:
+    client = _TableClient(error=AssertionError("must not be called"))
+    assert Reconciler(client, StateEngine({})).run("attach", "initial") == []
