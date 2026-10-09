@@ -22,6 +22,7 @@ from custom_components.dahua_arc.protocol.arming import (
 )
 from custom_components.dahua_arc.protocol.engine import Reconciler, StateEngine
 from custom_components.dahua_arc.protocol.inventory import extract_arm_areas
+from custom_components.dahua_arc.protocol.models import Zone
 from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
 
 AREAS = {0: "Living Room", 1: "Garage", 2: "Office"}
@@ -442,3 +443,184 @@ def test_reconciler_arm_read_login_error_propagates() -> None:
 def test_reconciler_without_tracker_skips_arm_read() -> None:
     client = _TableClient(error=AssertionError("must not be called"))
     assert Reconciler(client, StateEngine({})).run("attach", "initial") == []
+
+
+# -- alarms ------------------------------------------------------------------
+# Shapes follow an ARC3800H capture: an instant window contact opened while
+# armed Home, then a remote disarm.
+
+
+def _alarm(
+    zone_index: int, areas: list[int], action: str = "Start", **data: Any
+) -> dict[str, Any]:
+    return {
+        "Action": action,
+        "Code": "AlarmLocal",
+        "Index": zone_index,
+        "Data": {
+            "AlarmType": "Intrusion",
+            "AreaInfo": [{"Index": i, "Name": AREAS.get(i, "?")} for i in areas],
+            "Areas": areas,
+            "DefenceAreaType": "Intime",
+            "DevType": "MultiIOTransmitterP",
+            "Name": "Office Window ",
+            **data,
+        },
+    }
+
+
+def _alarm_clear(area_index: int, clear_type: str = "AlarmArea") -> dict[str, Any]:
+    return {
+        "Action": "Confirm",
+        "Code": "AlarmClear",
+        "Index": area_index,
+        "Data": {
+            "AreaInfo": [{"Index": area_index, "Name": AREAS.get(area_index, "?")}],
+            "EventOptions": {"EventSource": "Hub", "EventType": "ArmOrDisarm"},
+            "Mode": "D",
+            "TriggerMode": "Remote",
+            "Type": clear_type,
+        },
+    }
+
+
+def test_alarm_unknown_until_arm_state_is_known() -> None:
+    tracker, _ = _tracker()
+    assert tracker.alarm_state() is None
+    tracker.apply_table({0: "D", 1: "p1"}, tracker.watermark())
+    # Office has no table row yet: still unknown.
+    assert tracker.alarm_state() is None
+    assert tracker.areas[0].alarm is False
+    tracker.apply_event(_event("AreaArmModeChange", 2, "p1"))
+    assert tracker.alarm_state() is False
+
+
+def test_alarm_while_armed_lasts_until_disarm() -> None:
+    tracker, notified = _tracker()
+    for event in _global_burst("p1"):
+        tracker.apply_event(event)
+    assert tracker.alarm_state() is False
+    notified.clear()
+
+    tracker.apply_event(_alarm(192, [2]))
+    office = tracker.areas[2]
+    assert office.alarm is True
+    assert tracker.alarm_state() is True
+    assert tracker.alarm_areas() == [office]
+    assert office.alarm_started is not None
+    assert office.alarm_ended is None
+    assert [
+        (zone["area"], zone["zone"], zone["zone_index"], zone["alarm_type"])
+        for zone in office.alarm_zones
+    ] == [("Office", "Office Window", 192, "Intrusion")]
+    assert tracker.last_alarm["areas"] == ["Office"]
+    assert tracker.areas[0].alarm is False
+    assert notified == [None]
+
+    # The same zone again, or the input restoring, does not end the alarm.
+    tracker.apply_event(_alarm(192, [2]))
+    tracker.apply_event(_alarm(192, [2], action="Stop"))
+    assert office.alarm is True
+    assert len(office.alarm_zones) == 1
+    # A second zone joins the running alarm.
+    tracker.apply_event(_alarm(163, [2], Name="Office PIR"))
+    assert [zone["zone"] for zone in office.alarm_zones] == [
+        "Office Window",
+        "Office PIR",
+    ]
+
+    for event in _global_burst("D"):
+        tracker.apply_event(event)
+    assert office.alarm is False
+    assert office.alarm_ended is not None
+    # The ended alarm's details stay for reference.
+    assert len(office.alarm_zones) == 2
+    tracker.apply_event(_alarm_clear(2))
+    assert tracker.alarm_state() is False
+    assert tracker.diagnostics()["alarm_events_received"] == 5
+
+
+def test_alarm_clear_ends_an_alarm_without_disarm() -> None:
+    tracker, _ = _tracker()
+    tracker.apply_table({0: "D", 1: "D", 2: "D"}, tracker.watermark())
+    # A 24-hour zone can alarm while disarmed.
+    tracker.apply_event(_alarm(192, [2]))
+    assert tracker.areas[2].alarm is True
+    # A periodic table read showing the area disarmed does not end it.
+    tracker.apply_table({0: "D", 1: "D", 2: "D"}, tracker.watermark())
+    assert tracker.areas[2].alarm is True
+    tracker.apply_event(_alarm_clear(2))
+    assert tracker.areas[2].alarm is False
+    assert tracker.areas[2].alarm_ended is not None
+
+
+def test_alarm_area_falls_back_to_area_info() -> None:
+    tracker, _ = _tracker()
+    event = _alarm(192, [1])
+    del event["Data"]["Areas"]
+    tracker.apply_event(event)
+    assert tracker.areas[1].alarm is True
+
+
+def test_alarm_unknown_area_and_clear_type_are_recorded_not_guessed() -> None:
+    tracker, notified = _tracker()
+    tracker.apply_event(_alarm(192, [9]))
+    assert tracker.alarm_areas() == []
+    assert tracker.unknown_area_events == 1
+    assert tracker.last_alarm["areas"] == []
+    assert notified == []
+
+    tracker.apply_event(_alarm(192, [2]))
+    tracker.apply_event(_alarm_clear(2, clear_type="Fire"))
+    assert tracker.areas[2].alarm is True
+    tracker.apply_event(_alarm_clear(9))
+    assert tracker.unknown_area_events == 2
+    assert tracker.diagnostics()["unknown_clear_types"] == ["Fire"]
+
+
+def test_reconnect_keeps_an_alarm_until_a_table_read_shows_disarm() -> None:
+    tracker, _ = _tracker()
+    for event in _global_burst("T"):
+        tracker.apply_event(event)
+    tracker.apply_event(_alarm(192, [2]))
+
+    tracker.invalidate()
+    assert tracker.areas[0].alarm is None
+    assert tracker.areas[2].alarm is True
+    assert tracker.areas[2].alarm_unconfirmed is True
+    assert tracker.alarm_state() is True
+
+    # Still armed after the reconnect: the ARC still holds the alarm.
+    tracker.apply_table({0: "T", 1: "T", 2: "T"}, tracker.watermark())
+    assert tracker.areas[2].alarm is True
+    assert tracker.areas[2].alarm_unconfirmed is False
+    assert tracker.areas[0].alarm is False
+
+    # Disarmed while detached: the alarm ended unseen.
+    tracker.invalidate()
+    tracker.apply_table({0: "D", 1: "D", 2: "D"}, tracker.watermark())
+    assert tracker.areas[2].alarm is False
+    assert tracker.areas[2].alarm_ended is not None
+    assert tracker.alarm_state() is False
+
+
+def test_engine_routes_alarm_local_to_tracker_and_pircam_zone() -> None:
+    tracker, _ = _tracker()
+    pircam = Zone(index=5, name="Hall PIRCam", sense_method="PIRCam")
+    window = Zone(index=192, name="Office Window", sense_method="MultiIO")
+    engine = StateEngine({5: pircam, 192: window}, arming=tracker)
+    engine.begin_generation(1)
+
+    # A wired/wireless contact alarm never touches zone state.
+    engine._apply_event(_alarm(192, [2]))
+    assert tracker.areas[2].alarm is True
+    assert window.active is None
+    assert engine.realtime_events_received == 0
+
+    # A PIRCam alarm is both an alarm and that camera's motion.
+    engine._apply_event(_alarm(5, [0], DevType="PIRCam", SenseMethod="PIRCam"))
+    assert tracker.areas[0].alarm is True
+    assert pircam.active is True
+
+    engine._apply_event(_alarm_clear(2))
+    assert tracker.areas[2].alarm is False

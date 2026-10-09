@@ -175,6 +175,20 @@
       },
       "tamper": {
         "name": "Tamper"
+      },
+      "alarm": {
+        "name": "Alarm",
+        "state": {
+          "off": "Clear",
+          "on": "Triggered"
+        }
+      },
+      "area_alarm": {
+        "name": "{area} alarm",
+        "state": {
+          "off": "Clear",
+          "on": "Triggered"
+        }
       }
     },
     "sensor": {
