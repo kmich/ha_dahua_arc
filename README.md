@@ -23,6 +23,46 @@ This repository targets Home Assistant 2026.9+ and Python 3.14. Add `https://git
 
 Use a release package only after its CI checks have passed. Back up Home Assistant before upgrading an existing installation. The integration preserves legacy entity unique IDs based on the existing config-entry ID while recording the physical serial for future identity checks. New installations require a reported ARC serial and use it as the config-entry unique ID.
 
+## Alerts and automations
+
+The arm-state and alarm entities are ordinary Home Assistant entities, so alerts are plain automations. Entity IDs below assume the ARC device is named `ARC3800H`; check yours under **Settings → Entities**.
+
+Notify when the alarm is triggered (`from: "off"` avoids a notification when Home Assistant restarts or reconnects):
+
+```yaml
+alias: Alarm triggered
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.arc3800h_alarm
+    from: "off"
+    to: "on"
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: "Alarm"
+      message: >
+        {{ state_attr('binary_sensor.arc3800h_alarm', 'last_alarm_zone') }}
+        ({{ state_attr('binary_sensor.arc3800h_alarm', 'alarm_areas') | join(', ') }})
+```
+
+Notify on every arm or disarm:
+
+```yaml
+alias: Arm state changed
+triggers:
+  - trigger: state
+    entity_id: sensor.arc3800h_arm_state
+    not_from: [unknown, unavailable]
+    not_to: [unknown, unavailable]
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: "Alarm"
+      message: "{{ state_translated(trigger.to_state) }}"
+```
+
+To hear about refused arm attempts, trigger on any change of **Last arming failure**; its `open_zones` attribute lists the zones that blocked the arm. Per-area alarm and arm-state entities work the same way.
+
 ## Smart areas
 
 Area matching is optional. The setup/options flow enumerates existing Home Assistant areas and previews normalized name, alias, token, Dahua hint, and fuzzy matches (90% minimum confidence by default). High-confidence decisions are stored by immutable `Alarm[]` index as `zone_area_decisions` and reused at runtime; a rename cannot silently rematch an existing zone. Newly discovered indexes receive new decisions on setup. Re-running matching from the options flow keeps existing decisions unless **Re-evaluate zones that already have a decision** is ticked, and the preview always shows the result before it is saved. Auto-placement only changes an unassigned child device or an area the integration can identify as its own previous assignment. A user-changed or user-cleared area is protected.
