@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Read-only alarm state from the ARC's `AlarmLocal` events: a system **Alarm** binary sensor and an **alarm** binary sensor per enabled Dahua area. An alarm stays on until the area is disarmed or the ARC sends `AlarmClear`, and its attributes list the zones that triggered it. Diagnostics include the alarm tracker.
+
 ## [0.3.1] - 2026-09-29
 
 ### Fixed

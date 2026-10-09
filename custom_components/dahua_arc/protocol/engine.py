@@ -10,8 +10,9 @@ from typing import Any
 
 from ..vendor.dahua.exceptions import LoginError
 from .arming import (
+    ALARM_EVENT,
     AREA_ARM_MODE_CONFIG,
-    ARM_EVENT_CODES,
+    TRACKED_EVENT_CODES,
     ArmingTracker,
     parse_area_arm_modes,
 )
@@ -22,7 +23,7 @@ from .util import raw_to_active, safe_int, timestamp
 _LOGGER = logging.getLogger(__name__)
 
 EVENT_CODE = "AlarmInputSourceSignal"
-PIRCAM_EVENT_CODE = "AlarmLocal"
+PIRCAM_EVENT_CODE = ALARM_EVENT
 PIRCAM_MOTION_HOLD_SECONDS = 5.0
 
 
@@ -162,10 +163,9 @@ class StateEngine:
 
     def _apply_event(self, event: dict[str, Any]) -> None:
         code = str(event.get("Code") or "")
-        if code in ARM_EVENT_CODES:
-            if self.arming is not None:
-                self.arming.apply_event(event)
-            return
+        if code in TRACKED_EVENT_CODES and self.arming is not None:
+            self.arming.apply_event(event)
+        # AlarmLocal is both an alarm and, for a PIRCam, its motion signal.
         if code not in (EVENT_CODE, PIRCAM_EVENT_CODE):
             return
 
