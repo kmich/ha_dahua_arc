@@ -266,6 +266,87 @@ async def test_arm_state_entities_follow_arm_events(hass: HomeAssistant) -> None
     assert not hub._arm_listeners
 
 
+async def test_alarm_entities_follow_alarm_events(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    hub = make_hub()
+    await _setup(hass, entry, hub)
+    system = _entity_id(hass, "binary_sensor", f"{SERIAL}_alarm")
+    kitchen = _entity_id(hass, "binary_sensor", f"{SERIAL}_area_1_alarm")
+    garage = _entity_id(hass, "binary_sensor", f"{SERIAL}_area_2_alarm")
+    assert _entity_id(hass, "binary_sensor", f"{SERIAL}_area_3_alarm") is None
+    assert garage == "binary_sensor.arc3800h_garage_alarm"
+    assert hass.states.get(system).attributes["device_class"] == "safety"
+    # Unknown until the arm state is known.
+    for entity_id in (system, kitchen, garage):
+        assert hass.states.get(entity_id).state == "unknown"
+
+    def run(*events: dict) -> None:
+        def feed() -> None:
+            for event in events:
+                hub.engine._apply_event(event)
+
+        worker = threading.Thread(target=feed)
+        worker.start()
+        worker.join()
+
+    def arm(mode: str) -> list[dict]:
+        return [
+            {
+                "Action": "Pulse",
+                "Code": "AreaArmModeChange",
+                "Index": index,
+                "Data": {"Mode": mode, "TriggerMode": "Remote"},
+            }
+            for index in (0, 1)
+        ]
+
+    run(*arm("p1"))
+    await hass.async_block_till_done()
+    assert hass.states.get(system).state == STATE_OFF
+    assert hass.states.get(garage).state == STATE_OFF
+
+    run(
+        {
+            "Action": "Start",
+            "Code": "AlarmLocal",
+            "Index": 11,
+            "Data": {
+                "AlarmType": "Intrusion",
+                "AreaInfo": [{"Index": 1, "Name": "Garage "}],
+                "Areas": [1],
+                "DevType": "MultiIOTransmitterP",
+                "Name": "Garage Door",
+            },
+        }
+    )
+    await hass.async_block_till_done()
+    system_state = hass.states.get(system)
+    assert system_state.state == "on"
+    assert system_state.attributes["alarm_areas"] == ["Garage"]
+    assert system_state.attributes["last_alarm_zone"] == "Garage Door"
+    [zone] = system_state.attributes["alarm_zones"]
+    assert (zone["area"], zone["zone"], zone["alarm_type"]) == (
+        "Garage",
+        "Garage Door",
+        "Intrusion",
+    )
+    garage_state = hass.states.get(garage)
+    assert garage_state.state == "on"
+    assert garage_state.attributes["alarm_started"] is not None
+    assert hass.states.get(kitchen).state == STATE_OFF
+
+    run(*arm("D"))
+    await hass.async_block_till_done()
+    assert hass.states.get(system).state == STATE_OFF
+    garage_state = hass.states.get(garage)
+    assert garage_state.state == STATE_OFF
+    assert garage_state.attributes["alarm_ended"] is not None
+    assert garage_state.attributes["alarm_zones"][0]["zone"] == "Garage Door"
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    assert not hub._arm_listeners
+
+
 async def test_zone_event_updates_only_that_zone(hass: HomeAssistant) -> None:
     entry = _entry(hass)
     hub = make_hub()

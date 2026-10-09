@@ -16,7 +16,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .client import ArcHub
-from .entity import DahuaArcEntity, root_device_info
+from .entity import DahuaArcArmStateEntity, DahuaArcEntity, root_device_info
 from .protocol.arming import AREA_STATES, SYSTEM_STATES, ArmArea, ArmFailure
 from .protocol.util import parse_timestamp
 
@@ -257,28 +257,11 @@ def _failure_attributes(failure: ArmFailure | None) -> dict[str, object]:
     }
 
 
-class DahuaArcArmEntity(DahuaArcEntity, SensorEntity):
+class DahuaArcArmEntity(DahuaArcArmStateEntity, SensorEntity):
     """Arm state from ARC arm/disarm events and the AreaArmMode table (read-only).
 
     Unknown only while neither has reported since the realtime stream attached.
     """
-
-    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
-        super().__init__(hub, entry)
-        self._attr_device_info = root_device_info(hub, self._uid)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-
-        def listener() -> None:
-            if self._listening:
-                self.hass.loop.call_soon_threadsafe(self._async_hub_updated)
-
-        self.async_on_remove(self.hub.add_arm_listener(listener))
-
-    @property
-    def available(self) -> bool:
-        return self.hub.available
 
 
 class DahuaArcSystemArmState(DahuaArcArmEntity):

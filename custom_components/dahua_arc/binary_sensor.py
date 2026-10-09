@@ -14,7 +14,13 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .client import ArcHub, RadioDeviceInfo, Zone
 from .const import DOMAIN
-from .entity import DahuaArcEntity, radio_device_info, root_device_info
+from .entity import (
+    DahuaArcArmStateEntity,
+    DahuaArcEntity,
+    radio_device_info,
+    root_device_info,
+)
+from .protocol.arming import ArmArea
 
 _LOGGER = logging.getLogger(__name__)
 _GLASS_BREAK_DEVICE_CLASS = getattr(
@@ -77,6 +83,12 @@ async def async_setup_entry(
         for zone in hub.primary_zones.values()
     )
 
+    if hub.arming is not None:
+        entities.append(DahuaArcSystemAlarm(hub, entry))
+        entities.extend(
+            DahuaArcAreaAlarm(hub, entry, area) for area in hub.arming.areas.values()
+        )
+
     # Every paired physical radio device gets health entities, including
     # MultiIO modules, PIR/PIRCam, repeater, sirens, keyfob and keypad.
     for device in hub.radio_devices.values():
@@ -106,6 +118,75 @@ class DahuaArcConnectivity(DahuaArcEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return self.hub.available
+
+
+def _alarm_zones(areas: list[ArmArea]) -> list[dict[str, object]]:
+    return [
+        {
+            "area": zone["area"],
+            "zone": zone["zone"],
+            "alarm_type": zone["alarm_type"],
+            "at": zone["at"],
+        }
+        for area in areas
+        for zone in area.alarm_zones
+    ]
+
+
+class DahuaArcSystemAlarm(DahuaArcArmStateEntity, BinarySensorEntity):
+    """On while any Dahua area is in alarm (read-only, from ARC events)."""
+
+    _attr_translation_key = "alarm"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
+        super().__init__(hub, entry)
+        self._attr_unique_id = f"{self._uid}_alarm"
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.hub.arming.alarm_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        arming = self.hub.arming
+        areas = arming.alarm_areas()
+        last = arming.last_alarm
+        return {
+            "alarm_areas": [area.name for area in areas],
+            "alarm_zones": _alarm_zones(areas),
+            "last_alarm": last["at"] if last else None,
+            "last_alarm_zone": last["zone"] if last else None,
+            "last_alarm_areas": last["areas"] if last else None,
+        }
+
+
+class DahuaArcAreaAlarm(DahuaArcArmStateEntity, BinarySensorEntity):
+    """On while one Dahua area is in alarm, until it is disarmed."""
+
+    _attr_translation_key = "area_alarm"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+    _unrecorded_attributes = frozenset({"area_id"})
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub], area: ArmArea):
+        super().__init__(hub, entry)
+        self.area = area
+        self._attr_unique_id = f"{self._uid}_area_{area.area_id}_alarm"
+        self._attr_translation_placeholders = {"area": area.name}
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.area.alarm
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        area = self.area
+        return {
+            "area_id": area.area_id,
+            "alarm_zones": _alarm_zones([area]),
+            "alarm_started": area.alarm_started,
+            "alarm_ended": area.alarm_ended,
+        }
 
 
 class DahuaArcZoneBinarySensor(DahuaArcEntity, BinarySensorEntity):

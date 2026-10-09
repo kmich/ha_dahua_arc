@@ -89,3 +89,24 @@ class DahuaArcEntity(Entity):
         # The entity may have been removed between scheduling and running.
         if self._listening:
             self.async_write_ha_state()
+
+
+class DahuaArcArmStateEntity(DahuaArcEntity):
+    """Entity fed by the arm/alarm tracker instead of zone changes."""
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry) -> None:
+        super().__init__(hub, entry)
+        self._attr_device_info = root_device_info(hub, self._uid)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        def listener() -> None:
+            if self._listening:
+                self.hass.loop.call_soon_threadsafe(self._async_hub_updated)
+
+        self.async_on_remove(self.hub.add_arm_listener(listener))
+
+    @property
+    def available(self) -> bool:
+        return self.hub.available

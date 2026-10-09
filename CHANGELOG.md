@@ -6,6 +6,18 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+### Added
+
+- Read-only alarm state from the ARC's `AlarmLocal` events: a system **Alarm** binary sensor and an **alarm** binary sensor per enabled Dahua area. An alarm stays on until the area is disarmed or the ARC sends `AlarmClear`, and its attributes list the zones that triggered it. Diagnostics include the alarm tracker.
+- README section with example automations for arm-state and alarm alerts.
+
+### Known limitations
+
+- Alarms are verified on hardware only for an instant zone while armed Home. Entry-delay zones, 24-hour zones and PIR-camera alarms are expected to behave the same but are not yet verified.
+- An alarm that starts while Home Assistant is disconnected from the ARC is not reported.
+
 ## [0.3.1] - 2026-09-29
 
 ### Fixed
@@ -78,7 +90,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.1.0...v0.2.0

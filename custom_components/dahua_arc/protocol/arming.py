@@ -1,4 +1,4 @@
-"""Read-only area arm-state tracking from ARC realtime arm/disarm events.
+"""Read-only area arm and alarm state from ARC realtime events.
 
 The ARC pushes ``AreaArmModeChange`` (one per area) and a
 ``GlobalAreaArmModeChange`` summary whenever areas are armed or disarmed,
@@ -12,6 +12,13 @@ The events only report changes. The current state comes from the
 realtime stream (re)attaches and on every periodic resync. Like zone
 snapshots, a table read never overrides an arm event that arrived after the
 read began.
+
+An alarm is ``AlarmLocal`` Start: ``Index`` is the zone's ``Alarm[]`` index
+and ``Data.Areas`` the zero-based area indexes it alarmed. Disarming the area
+ends it, followed by ``AlarmClear`` Confirm whose ``Index`` is the area. No
+config table reports an alarm in progress, so alarm state is known only from
+these events: it is off once the area's arm state is known and no alarm has
+arrived since.
 """
 
 from __future__ import annotations
@@ -39,6 +46,10 @@ ARM_EVENT_CODES = frozenset(
         GLOBAL_ARM_FAILURE_EVENT,
     }
 )
+ALARM_EVENT = "AlarmLocal"
+ALARM_CLEAR_EVENT = "AlarmClear"
+ALARM_CLEAR_AREA = "AlarmArea"
+TRACKED_EVENT_CODES = ARM_EVENT_CODES | {ALARM_EVENT, ALARM_CLEAR_EVENT}
 
 DISARMED = "disarmed"
 ARMED_HOME = "armed_home"
@@ -137,6 +148,15 @@ class ArmArea:
     changed_at: str | None = None
     bypassed_zones: list[dict[str, Any]] = field(default_factory=list)
     last_failure: ArmFailure | None = None
+    # None while unknown. The zones and times describe the current alarm, or
+    # the last one once it has ended.
+    alarm: bool | None = None
+    alarm_started: str | None = None
+    alarm_ended: str | None = None
+    alarm_zones: list[dict[str, Any]] = field(default_factory=list)
+    # An alarm that was on when the realtime stream detached. The next table
+    # read decides whether it survived: a disarm ends it.
+    alarm_unconfirmed: bool = False
 
     @property
     def area_id(self) -> int:
@@ -168,6 +188,9 @@ class ArmingTracker:
         self.lock = threading.RLock()
         self.last_failure: ArmFailure | None = None
         self.last_global_change: dict[str, Any] | None = None
+        self.last_alarm: dict[str, Any] | None = None
+        self.alarm_events_received = 0
+        self.unknown_clear_types: set[str] = set()
         self.events_received = 0
         self.unknown_area_events = 0
         self.unknown_modes: set[str] = set()
@@ -202,6 +225,20 @@ class ArmingTracker:
                 if area.state not in (None, DISARMED)
             ]
 
+    def alarm_state(self) -> bool | None:
+        """On while any area is in alarm; unknown while any area is unknown."""
+        with self.lock:
+            alarms = {area.alarm for area in self.areas.values()}
+        if True in alarms:
+            return True
+        if not alarms or None in alarms:
+            return None
+        return False
+
+    def alarm_areas(self) -> list[ArmArea]:
+        with self.lock:
+            return [area for area in self.areas.values() if area.alarm]
+
     def watermark(self) -> int:
         """Event sequence to pass to :meth:`apply_table` for a read begun now."""
         with self.lock:
@@ -232,6 +269,7 @@ class ArmingTracker:
                     self.table_stale_rejects += 1
                     continue
                 self._note_mode(raw_mode)
+                changed |= self._settle_alarm(area, raw_mode)
                 if area.raw_mode == raw_mode:
                     continue
                 if area.raw_mode is not None:
@@ -243,18 +281,42 @@ class ArmingTracker:
         if changed:
             self._schedule_notify()
 
+    @staticmethod
+    def _settle_alarm(area: ArmArea, raw_mode: str) -> bool:
+        """Resolve an unknown alarm state once the area's arm state is known."""
+        if area.alarm is None:
+            area.alarm = False
+            return True
+        if area.alarm_unconfirmed:
+            area.alarm_unconfirmed = False
+            if arm_mode_state(raw_mode) == DISARMED:
+                # Disarmed while detached: the alarm ended unseen.
+                area.alarm = False
+                area.alarm_ended = timestamp()
+                return True
+        return False
+
     def table_failed(self, error: str) -> None:
         with self.lock:
             self.last_table_error = error
 
     def invalidate(self) -> None:
-        """Forget arm states: events may have been missed while detached."""
+        """Forget arm states: events may have been missed while detached.
+
+        An alarm in progress stays on, unconfirmed: the ARC holds an alarm
+        until the area is disarmed, which the next table read shows.
+        """
         changed = False
         with self.lock:
             for area in self.areas.values():
                 if area.raw_mode is not None:
                     area.raw_mode = None
                     area.source = None
+                    changed = True
+                if area.alarm:
+                    area.alarm_unconfirmed = True
+                elif area.alarm is not None:
+                    area.alarm = None
                     changed = True
             self.invalidations += 1
         if changed:
@@ -264,11 +326,17 @@ class ArmingTracker:
 
     def apply_event(self, event: dict[str, Any]) -> None:
         code = str(event.get("Code") or "")
-        if code not in ARM_EVENT_CODES:
+        if code not in TRACKED_EVENT_CODES:
             return
         data = event.get("Data") or {}
         if not isinstance(data, dict):
             data = {}
+        if code == ALARM_EVENT:
+            self._apply_alarm(event, data)
+            return
+        if code == ALARM_CLEAR_EVENT:
+            self._apply_alarm_clear(event, data)
+            return
         raw_mode = str(data.get("Mode") or "") or None
         trigger_mode = str(data.get("TriggerMode") or "") or None
         now = timestamp()
@@ -319,6 +387,78 @@ class ArmingTracker:
                     area.trigger_mode = trigger_mode
                     area.changed_at = now
                     area.bypassed_zones = parse_abnormal_zones(data)
+                    if arm_mode_state(raw_mode) == DISARMED:
+                        # Disarming ends an alarm; AlarmClear follows.
+                        self._end_alarm(area, now)
+                    else:
+                        self._settle_alarm(area, raw_mode)
+        self._schedule_notify()
+
+    @staticmethod
+    def _end_alarm(area: ArmArea, now: str) -> None:
+        if area.alarm:
+            area.alarm_ended = now
+        area.alarm = False
+        area.alarm_unconfirmed = False
+
+    def _apply_alarm(self, event: dict[str, Any], data: dict[str, Any]) -> None:
+        if event.get("Action") != "Start":
+            # Stop follows the input, not the alarm, which lasts until disarm.
+            with self.lock:
+                self.alarm_events_received += 1
+            return
+        indexes = data.get("Areas")
+        if not isinstance(indexes, list):
+            indexes = [
+                info.get("Index")
+                for info in data.get("AreaInfo") or []
+                if isinstance(info, dict)
+            ]
+        now = timestamp()
+        zone = {
+            "zone_index": safe_int(event.get("Index")),
+            "zone": str(data.get("Name") or "").strip() or None,
+            "alarm_type": data.get("AlarmType"),
+            "at": now,
+        }
+        with self.lock:
+            self.alarm_events_received += 1
+            areas = []
+            for index in indexes:
+                area = self.areas.get(safe_int(index, -1))
+                if area is None:
+                    self.unknown_area_events += 1
+                    continue
+                if not area.alarm:
+                    area.alarm = True
+                    area.alarm_started = now
+                    area.alarm_ended = None
+                    area.alarm_zones = []
+                area.alarm_unconfirmed = False
+                if all(
+                    seen["zone_index"] != zone["zone_index"]
+                    for seen in area.alarm_zones
+                ):
+                    area.alarm_zones.append({"area": area.name, **zone})
+                areas.append(area.name)
+            self.last_alarm = {**zone, "areas": areas}
+            if not areas:
+                return
+        self._schedule_notify()
+
+    def _apply_alarm_clear(self, event: dict[str, Any], data: dict[str, Any]) -> None:
+        clear_type = str(data.get("Type") or "")
+        with self.lock:
+            self.alarm_events_received += 1
+            if clear_type != ALARM_CLEAR_AREA:
+                # Only area clears are verified; Index may mean something else.
+                self.unknown_clear_types.add(clear_type)
+                return
+            area = self.areas.get(safe_int(event.get("Index"), -1))
+            if area is None:
+                self.unknown_area_events += 1
+                return
+            self._end_alarm(area, timestamp())
         self._schedule_notify()
 
     # -- notification ------------------------------------------------------
@@ -387,6 +527,10 @@ class ArmingTracker:
                 "last_table_error": self.last_table_error,
                 "last_global_change": self.last_global_change,
                 "last_failure": self._failure_dict(self.last_failure),
+                "alarm_state": self.alarm_state(),
+                "alarm_events_received": self.alarm_events_received,
+                "unknown_clear_types": sorted(self.unknown_clear_types),
+                "last_alarm": self.last_alarm,
                 "areas": {
                     area.area_id: {
                         "name": area.name,
@@ -398,6 +542,11 @@ class ArmingTracker:
                         "changed_at": area.changed_at,
                         "bypassed_zones": list(area.bypassed_zones),
                         "last_failure": self._failure_dict(area.last_failure),
+                        "alarm": area.alarm,
+                        "alarm_unconfirmed": area.alarm_unconfirmed,
+                        "alarm_started": area.alarm_started,
+                        "alarm_ended": area.alarm_ended,
+                        "alarm_zones": list(area.alarm_zones),
                     }
                     for area in self.areas.values()
                 },
