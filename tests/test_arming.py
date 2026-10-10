@@ -624,3 +624,86 @@ def test_engine_routes_alarm_local_to_tracker_and_pircam_zone() -> None:
 
     engine._apply_event(_alarm_clear(2))
     assert tracker.areas[2].alarm is False
+
+
+# -- wait_for_outcome (used by the arm controller) ---------------------------
+
+
+def _known(tracker: ArmingTracker, mode: str = "D") -> None:
+    tracker.apply_table(dict.fromkeys(AREAS, mode), tracker.watermark())
+
+
+def test_wait_confirms_only_when_every_target_area_changed() -> None:
+    tracker, _ = _tracker()
+    _known(tracker)
+    mark = tracker.outcome_mark()
+    tracker.apply_event(_event("AreaArmModeChange", 0, "T"))
+    result = tracker.wait_for_outcome(mark, (0, 1), "T", 0.05)
+    assert result.outcome == "timeout"
+    tracker.apply_event(_event("AreaArmModeChange", 1, "T"))
+    result = tracker.wait_for_outcome(mark, (0, 1), "T", 0.05)
+    assert (result.outcome, result.confirmed_by) == ("confirmed", "event")
+
+
+def test_wait_ignores_events_from_before_the_mark() -> None:
+    tracker, _ = _tracker()
+    tracker.apply_event(_event("AreaArmModeChange", 0, "T"))
+    tracker.apply_event(_event("ArmingFailure", 1, "T", abnormal=ABNORMAL))
+    mark = tracker.outcome_mark()
+    assert tracker.wait_for_outcome(mark, (0,), "T", 0.05).outcome == "timeout"
+    assert tracker.wait_for_outcome(mark, (1,), "T", 0.05).outcome == "timeout"
+
+
+def test_wait_refuses_on_a_failure_after_the_mark() -> None:
+    tracker, _ = _tracker()
+    _known(tracker)
+    mark = tracker.outcome_mark()
+    tracker.apply_event(_event("ArmingFailure", 2, "p1", abnormal=ABNORMAL))
+    result = tracker.wait_for_outcome(mark, (2,), "p1", 0.05)
+    assert result.outcome == "refused"
+    assert result.open_zones[0]["zone"] == "Office Window"
+    # A failure for an area that is not a target does not refuse.
+    assert tracker.wait_for_outcome(mark, (0,), "p1", 0.05).outcome == "timeout"
+
+
+def test_wait_is_woken_by_an_event_from_another_thread() -> None:
+    tracker, _ = _tracker()
+    _known(tracker)
+    mark = tracker.outcome_mark()
+    timer = threading.Timer(
+        0.05, tracker.apply_event, args=(_event("AreaArmModeChange", 0, "p1"),)
+    )
+    timer.start()
+    started = time.monotonic()
+    result = tracker.wait_for_outcome(mark, (0,), "p1", 5.0)
+    timer.join()
+    assert result.outcome == "confirmed"
+    assert time.monotonic() - started < 2
+
+
+def test_wait_survives_invalidate_and_is_resolved_by_the_table() -> None:
+    tracker, _ = _tracker()
+    _known(tracker)
+    mark = tracker.outcome_mark()
+    tracker.invalidate()
+    assert tracker.wait_for_outcome(mark, (0,), "T", 0.05).outcome == "timeout"
+    tracker.apply_table({0: "T"}, tracker.watermark())
+    result = tracker.wait_for_outcome(mark, (0,), "T", 0.05)
+    assert (result.outcome, result.confirmed_by) == ("confirmed", "table")
+
+
+def test_a_table_read_from_before_the_mark_does_not_confirm() -> None:
+    tracker, _ = _tracker()
+    _known(tracker, "T")
+    mark = tracker.outcome_mark()
+    assert tracker.wait_for_outcome(mark, (0,), "T", 0.05).outcome == "timeout"
+
+
+def test_wait_stops_promptly_and_without_targets_never_confirms() -> None:
+    tracker, _ = _tracker()
+    stop = threading.Event()
+    stop.set()
+    mark = tracker.outcome_mark()
+    assert tracker.wait_for_outcome(mark, (0,), "T", 5.0, stop).outcome == "stopped"
+    assert tracker.wait_for_outcome(mark, (), "T", 0.01).outcome == "timeout"
+    assert tracker.wait_for_outcome(mark, (9,), "T", 0.01).outcome == "timeout"
