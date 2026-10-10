@@ -174,6 +174,7 @@ class FakeArc:
         # "ok" | "error" (no permission) | "refused" (reply carries the open
         # zones) | "no_reply" (applied, but the reply never arrives).
         self.arm_reply = "ok"
+        self.arm_error_code = 268894210
         self.suppress_arm_events = False
         self.arm_takes_effect = True  # False: accepted but the mode is unchanged
         self.arm_delay = 0.02  # seconds between the reply and the events
@@ -279,7 +280,7 @@ class FakeArc:
         if self.arm_reply == "error":
             return {
                 "result": False,
-                "error": {"code": 268894210, "message": "No permission"},
+                "error": {"code": self.arm_error_code, "message": "No permission"},
             }, 1
         refuse = bool(self.open_zones) and mode != "D"
         if refuse and self.arm_reply == "refused":

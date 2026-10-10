@@ -25,8 +25,11 @@ from .const import (
     CONF_ARC_SERIAL,
     CONF_AREA_MATCH_AREAS,
     CONF_AREA_MATCH_THRESHOLD,
+    CONF_ARM_CODE_ACK_NO_CODE,
+    CONF_ARM_CODE_HASH,
     CONF_AUTO_AREA_MATCH,
     CONF_DHIP_PORT,
+    CONF_ENABLE_ARM_CONTROL,
     CONF_ENABLE_RESEARCH_FEATURES,
     CONF_HTTP_PORT,
     CONF_PERIODIC_RESYNC,
@@ -35,10 +38,13 @@ from .const import (
     DEFAULT_AREA_MATCH_THRESHOLD,
     DEFAULT_AUTO_AREA_MATCH,
     DEFAULT_DHIP_PORT,
+    DEFAULT_ENABLE_ARM_CONTROL,
     DEFAULT_ENABLE_RESEARCH_FEATURES,
     DEFAULT_HTTP_PORT,
     DEFAULT_PERIODIC_RESYNC,
     DOMAIN,
+    ISSUE_ARM_CONTROL_UNSUPPORTED,
+    ISSUE_ARM_CONTROL_WITHOUT_CODE,
     ISSUE_INVENTORY_ERROR,
     ISSUE_NO_PRIMARY_ZONES,
     ISSUE_RESEARCH_ENABLED,
@@ -345,6 +351,40 @@ def _update_repair_issues(
             hass, DOMAIN, _entry_issue_id(entry, ISSUE_RESEARCH_ENABLED)
         )
 
+    arm_enabled = entry.options.get(CONF_ENABLE_ARM_CONTROL, DEFAULT_ENABLE_ARM_CONTROL)
+    unsupported_id = _entry_issue_id(entry, ISSUE_ARM_CONTROL_UNSUPPORTED)
+    no_code_id = _entry_issue_id(entry, ISSUE_ARM_CONTROL_WITHOUT_CODE)
+    if arm_enabled and hub.arm_control_unsupported:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            unsupported_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_ARM_CONTROL_UNSUPPORTED,
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, unsupported_id)
+    if (
+        arm_enabled
+        and hub.arm_control is not None
+        and not entry.options.get(CONF_ARM_CODE_HASH)
+        and not entry.options.get(CONF_ARM_CODE_ACK_NO_CODE)
+    ):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            no_code_id,
+            is_fixable=True,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_ARM_CONTROL_WITHOUT_CODE,
+            data={"entry_id": entry.entry_id},
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, no_code_id)
+
     if not hub.primary_zones:
         ir.async_create_issue(
             hass,
@@ -391,6 +431,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) -> 
         ),
         enable_research_features=entry.options.get(
             CONF_ENABLE_RESEARCH_FEATURES, DEFAULT_ENABLE_RESEARCH_FEATURES
+        ),
+        enable_arm_control=entry.options.get(
+            CONF_ENABLE_ARM_CONTROL, DEFAULT_ENABLE_ARM_CONTROL
         ),
     )
     try:

@@ -16,12 +16,15 @@ from custom_components.dahua_arc.protocol.cgi import (
     discover_alarm_points,
     discover_multiio_parents,
 )
+from custom_components.dahua_arc.protocol.control import FAKE_COMMAND_SPEC
 from custom_components.dahua_arc.protocol.engine import StateEngine
 from custom_components.dahua_arc.protocol.inventory import (
+    extract_area_zones,
     extract_arm_areas,
     extract_radio_devices,
     extract_zone_area_hints,
 )
+from custom_components.dahua_arc.protocol.snapshot import SnapshotClient
 from custom_components.dahua_arc.research.detector_test import (
     DetectorTestController,
 )
@@ -139,7 +142,18 @@ def inventory(serial: str = SERIAL) -> dict:
     }
 
 
-def make_hub(*, research: bool = False, serial: str = SERIAL) -> ArcHub:
+def make_hub(
+    *,
+    research: bool = False,
+    serial: str = SERIAL,
+    arm_control: bool = False,
+    arm_spec: bool = True,
+) -> ArcHub:
+    """``arm_control`` opts in; ``arm_spec`` gives it the fake command spec.
+
+    Without a spec the hub behaves like the shipped integration, which has no
+    verified arm command yet.
+    """
     hub = ArcHub(
         "192.0.2.10",
         80,
@@ -147,6 +161,7 @@ def make_hub(*, research: bool = False, serial: str = SERIAL) -> ArcHub:
         "admin",
         "test-only",
         enable_research_features=research,
+        enable_arm_control=arm_control,
     )
     hub.alarm_records = {idx: dict(cfg) for idx, cfg in RECORDS.items()}
     hub.parents = discover_multiio_parents(hub.alarm_records)
@@ -181,6 +196,14 @@ def make_hub(*, research: bool = False, serial: str = SERIAL) -> ArcHub:
         hub.detector_test = DetectorTestController(
             hub.host, 5000, "admin", "test-only", hub.zones, hub._notify
         )
+    hub.area_zones = extract_area_zones(hub.rpc_inventory)
+    if arm_control and arm_spec:
+        hub.arm_command_spec = FAKE_COMMAND_SPEC
+        hub.allow_fake_arm_spec = True
+        # Control sessions and the fallback table read talk to a FakeArc
+        # that the test patches in with ``FakeArc.patch()``.
+        hub.snapshot_client = SnapshotClient(hub.host, 5000, "admin", "test-only")
+    hub.setup_arm_control()
     hub.start = Mock()
     hub.stop = Mock()
     return hub

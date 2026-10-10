@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from custom_components.dahua_arc.hub import ArcHub, probe_connection
 from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
-from tests.fake_arc import FakeArc
+from tests.fake_arc import ARM_METHOD, FakeArc
 from tests.hub_factory import (
     HALL_PIRCAM,
     KITCHEN_WINDOW,
@@ -287,3 +287,111 @@ def test_research_pircam_image_download(cgi_records) -> None:
         finally:
             hub.stop()
     assert arc.sockets == []
+
+
+def _arm_hub(*, enabled: bool, spec: bool) -> ArcHub:
+    hub = ArcHub(
+        "192.0.2.10",
+        80,
+        5000,
+        "admin",
+        "test-only",
+        3600,
+        enable_arm_control=enabled,
+    )
+    if spec:
+        from custom_components.dahua_arc.protocol.control import FAKE_COMMAND_SPEC
+
+        hub.arm_command_spec = FAKE_COMMAND_SPEC
+        hub.allow_fake_arm_spec = True
+    return hub
+
+
+def test_arm_control_is_off_unless_opted_in(cgi_records) -> None:
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"Mode": "D"}]}
+    hub = _arm_hub(enabled=False, spec=True)
+    with arc.patch():
+        try:
+            hub.start()
+            assert hub.arm_control is None
+            assert not hub.arm_control_unsupported
+            assert hub.arm_control_diagnostics() is None
+        finally:
+            hub.stop()
+    assert ARM_METHOD not in arc.calls
+
+
+def test_arm_control_without_a_verified_command_is_inert(cgi_records) -> None:
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"Mode": "D"}]}
+    hub = _arm_hub(enabled=True, spec=False)
+    with arc.patch():
+        try:
+            hub.start()
+            assert hub.arm_control is None
+            assert hub.arm_control_unsupported
+            assert hub.arm_control_diagnostics() == {
+                "enabled": True,
+                "supported": False,
+            }
+        finally:
+            hub.stop()
+    assert ARM_METHOD not in arc.calls
+
+
+def test_arm_command_is_confirmed_by_the_real_event_stream(cgi_records) -> None:
+    from custom_components.dahua_arc.protocol.control import CommandOutcome
+
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"Mode": "D"}]}
+    arc.config_tables["AlarmSubSystem"] = [
+        {"Enable": True, "AreaId": 1, "Name": "Kitchen", "Zone": [7]}
+    ]
+    hub = _arm_hub(enabled=True, spec=True)
+    with arc.patch():
+        try:
+            hub.start()
+            assert hub.arm_control is not None
+            assert hub.area_zones == {0: [KITCHEN_WINDOW]}
+            assert hub.arming.system_state() == "disarmed"
+            from custom_components.dahua_arc.protocol.control import ArmCommand
+
+            result = hub.arm_control.execute(ArmCommand(mode="T", areas=(0,)))
+            assert result.outcome is CommandOutcome.CONFIRMED
+            assert result.confirmed_by == "event"
+            assert hub.arming.system_state() == "armed_away"
+            assert arc.calls.count(ARM_METHOD) == 1
+            assert hub.arm_control_diagnostics()["history"][0]["outcome"] == (
+                "confirmed"
+            )
+            # The control session is closed again; realtime and snapshot remain.
+            assert len(arc.sockets) == 2
+
+            # Unload releases a waiting command instead of hanging.
+            hub.arm_stop.set()
+            stopped = hub.arm_control.execute(ArmCommand(mode="D", areas=(0,)))
+            assert stopped.reason == "unloading"
+        finally:
+            hub.stop()
+    assert arc.calls.count(ARM_METHOD) == 1
+
+
+def test_open_zones_reads_live_zone_state(cgi_records) -> None:
+    arc = _arc()
+    hub = _arm_hub(enabled=False, spec=False)
+    with arc.patch():
+        try:
+            hub.start()
+            assert hub.open_zones((0,)) == []
+            arc.push_event(
+                {
+                    "Code": "AlarmInputSourceSignal",
+                    "Index": KITCHEN_WINDOW,
+                    "Action": "Start",
+                }
+            )
+            assert _wait(lambda: hub.open_zones((0,)) == ["Kitchen Window"])
+            assert hub.open_zones((5,)) is None
+        finally:
+            hub.stop()
