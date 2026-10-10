@@ -1,4 +1,4 @@
-pytest-homeassistant-custom-component==0.13.366
+pytest-homeassistant-custom-component==0.13.368
 pytest-cov>=7,<8
 ruff==0.16.10
 # Required by the Home Assistant camera component, which the platform tests load.
