@@ -11,12 +11,17 @@ import json
 import socket
 import struct
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
 from custom_components.dahua_arc.vendor.dahua import const
 from custom_components.dahua_arc.vendor.dahua.transport import login_digest
+
+# Must equal FAKE_COMMAND_SPEC.method (a test checks it). The fake ARC never
+# answers any other arm method.
+ARM_METHOD = "FakeArc.setArmMode"
 
 SESSION = 4242
 REALM = "Login to FAKE"
@@ -109,6 +114,8 @@ class FakeSocket:
             self._download(request_id, request["params"]["fileName"])
             return
         response, parts = self.arc.respond(self, method, request.get("params"))
+        if response is None:
+            return  # a reply that never arrives
         response.setdefault("id", request_id)
         response.setdefault("session", SESSION)
         self.push(_frame(response, request_id=request_id, parts=parts))
@@ -163,6 +170,19 @@ class FakeArc:
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
         self._lock = threading.Lock()
+        # -- arm/disarm support (the fake ARC only knows ARM_METHOD) --------
+        # "ok" | "error" (no permission) | "refused" (reply carries the open
+        # zones) | "no_reply" (applied, but the reply never arrives).
+        self.arm_reply = "ok"
+        self.suppress_arm_events = False
+        self.arm_takes_effect = True  # False: accepted but the mode is unchanged
+        self.arm_delay = 0.02  # seconds between the reply and the events
+        # ZoneAbnormal rows; when set, arming (not disarming) is refused with
+        # ArmingFailure events and the modes stay unchanged.
+        self.open_zones: list[dict[str, Any]] = []
+        self.arm_requests: list[dict[str, Any]] = []
+        self.event_listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._timers: list[threading.Timer] = []
 
     def _forget(self, sock: FakeSocket) -> None:
         with self._lock:
@@ -184,6 +204,8 @@ class FakeArc:
             yield mocked
 
     def push_event(self, event: dict[str, Any]) -> None:
+        for listener in tuple(self.event_listeners):
+            listener(event)
         payload = {
             "method": "client.notifyEventStream",
             "params": {"eventList": [event]},
@@ -193,9 +215,112 @@ class FakeArc:
         for sock in attached:
             sock.push(_frame(payload, request_id=0))
 
+    # -- arm/disarm ------------------------------------------------------
+    def area_modes(self) -> list[str]:
+        rows = (self.config_tables.get("AreaArmMode") or {}).get("Areas") or []
+        return [row.get("Mode", "D") for row in rows]
+
+    def _area_name(self, index: int) -> str:
+        table = self.config_tables.get("AlarmSubSystem") or []
+        if index < len(table):
+            return str(table[index].get("Name") or f"Area {index + 1}").strip()
+        return f"Area {index + 1}"
+
+    def _arm_event(
+        self, code: str, index: int, mode: str, *, abnormal: dict | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "EventOptions": {"EventType": "ArmOrDisarm"},
+            "IsGlobal": index < 0,
+            "Mode": mode,
+            "Name": "FAKE",
+            "Profile": "Auto",
+            "TriggerMode": "Remote",
+        }
+        if index >= 0:
+            data["AreaInfo"] = [{"Index": index, "Name": self._area_name(index)}]
+        if abnormal:
+            data["Abnormal"] = abnormal
+        return {"Action": "Pulse", "Code": code, "Data": data, "Index": index}
+
+    def _abnormal(self, areas: list[int]) -> dict[str, Any]:
+        return {
+            "detail": [
+                {
+                    "Area": index + 1,
+                    "AreaName": self._area_name(index),
+                    "ZoneAbnormal": [dict(zone) for zone in self.open_zones],
+                }
+                for index in areas
+            ]
+        }
+
+    def _emit_arm_events(self, mode: str, areas: list[int], *, failed: bool) -> None:
+        total = len(self.area_modes())
+        suffix = "ArmingFailure" if failed else "AreaArmModeChange"
+        abnormal = self._abnormal(areas) if failed else None
+        if len(areas) == total and total > 1:
+            self.push_event(
+                self._arm_event(f"Global{suffix}", -1, mode, abnormal=abnormal)
+            )
+        for index in areas:
+            self.push_event(
+                self._arm_event(
+                    suffix,
+                    index,
+                    mode,
+                    abnormal=self._abnormal([index]) if failed else None,
+                )
+            )
+
+    def _arm(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
+        self.arm_requests.append(params)
+        mode, areas = params["Mode"], list(params["Areas"])
+        if self.arm_reply == "error":
+            return {
+                "result": False,
+                "error": {"code": 268894210, "message": "No permission"},
+            }, 1
+        refuse = bool(self.open_zones) and mode != "D"
+        if refuse and self.arm_reply == "refused":
+            return {
+                "result": False,
+                "error": {
+                    "code": 1001,
+                    "message": "Zones open",
+                    "data": {"Abnormal": self._abnormal(areas)},
+                },
+            }, 1
+        if self.arm_takes_effect and not refuse:
+            rows = self.config_tables["AreaArmMode"]["Areas"]
+            for index in areas:
+                rows[index]["Mode"] = mode
+        if not self.suppress_arm_events and (refuse or self.arm_takes_effect):
+            timer = threading.Timer(
+                self.arm_delay,
+                self._emit_arm_events,
+                args=(mode, areas),
+                kwargs={"failed": refuse},
+            )
+            timer.daemon = True
+            self._timers.append(timer)
+            timer.start()
+        if self.arm_reply == "no_reply":
+            return None, 0
+        return {"result": True}, 1
+
+    def close_timers(self) -> None:
+        for timer in self._timers:
+            timer.cancel()
+        self._timers.clear()
+
     def respond(
         self, sock: FakeSocket, method: str, params: Any
-    ) -> tuple[dict[str, Any], int]:
+    ) -> tuple[dict[str, Any] | None, int]:
+        if method == ARM_METHOD:
+            return self._arm(params)
+        if method == const.LOGOUT:
+            return {"result": True}, 1
         if method == const.LOGIN:
             if not params.get("password"):
                 return {
