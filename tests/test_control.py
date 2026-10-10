@@ -388,3 +388,16 @@ def test_extract_area_zones() -> None:
     assert extract_area_zones(inventory) == {0: [3, 7], 2: [], 3: [3]}
     assert set(extract_arm_areas(inventory)) == set(extract_area_zones(inventory))
     assert extract_area_zones({}) == {}
+
+
+def test_only_the_panel_platform_executes_commands() -> None:
+    """Discovery, setup, options, diagnostics and periodic code never send."""
+    import re
+
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "dahua_arc"
+    callers = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if re.search(r"(?<!ArmController)\.execute\b", path.read_text(encoding="utf-8"))
+    }
+    assert callers == {"alarm_control_panel.py"}
