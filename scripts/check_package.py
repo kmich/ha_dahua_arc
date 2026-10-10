@@ -45,7 +45,6 @@ def main() -> None:
     version = manifest.get("version")
     assert isinstance(version, str) and version
     assert not (COMPONENT / "strings.json").exists()
-    assert not (COMPONENT / "alarm_control_panel.py").exists()
     with tempfile.TemporaryDirectory() as temporary:
         archive_path = Path(temporary) / f"dahua_arc_ha_v{version}.zip"
         build_archive(archive_path)

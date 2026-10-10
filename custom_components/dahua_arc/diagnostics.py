@@ -7,7 +7,15 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from . import DahuaArcConfigEntry
-from .const import CONF_ARC_SERIAL, CONF_ZONE_AREA_OWNERSHIP
+from .const import (
+    CONF_ARC_SERIAL,
+    CONF_ARM_CODE_HASH,
+    CONF_ARM_MODES,
+    CONF_CODE_ARM_REQUIRED,
+    CONF_CODE_DISARM_REQUIRED,
+    CONF_ENABLE_ARM_CONTROL,
+    CONF_ZONE_AREA_OWNERSHIP,
+)
 
 
 async def async_get_config_entry_diagnostics(
@@ -24,6 +32,14 @@ async def async_get_config_entry_diagnostics(
         "entry": async_redact_data(
             dict(entry.data), {CONF_HOST, CONF_USERNAME, CONF_PASSWORD, CONF_ARC_SERIAL}
         ),
+        # The code and its hash are never exported, only whether one is set.
+        "arm_control_options": {
+            "enabled": bool(entry.options.get(CONF_ENABLE_ARM_CONTROL)),
+            "code_set": bool(entry.options.get(CONF_ARM_CODE_HASH)),
+            "code_disarm_required": entry.options.get(CONF_CODE_DISARM_REQUIRED),
+            "code_arm_required": entry.options.get(CONF_CODE_ARM_REQUIRED),
+            "modes": entry.options.get(CONF_ARM_MODES),
+        },
         "area_ownership": dict(entry.options.get(CONF_ZONE_AREA_OWNERSHIP, {})),
         "runtime": entry.runtime_data.diagnostics(),
     }

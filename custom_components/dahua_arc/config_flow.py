@@ -17,23 +17,38 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
+from . import arm_code
 from .area_assignment import decide_zone_areas
 from .area_matcher import AreaCandidate
 from .client import probe_connection
 from .const import (
+    CONF_ACKNOWLEDGE_CONTROL,
     CONF_ARC_SERIAL,
     CONF_AREA_MATCH_AREAS,
     CONF_AREA_MATCH_THRESHOLD,
+    CONF_ARM_CODE,
+    CONF_ARM_CODE_ACK_NO_CODE,
+    CONF_ARM_CODE_HASH,
+    CONF_ARM_CONTROL_ACK,
+    CONF_ARM_MODES,
     CONF_AUTO_AREA_MATCH,
+    CONF_CLEAR_ARM_CODE,
+    CONF_CODE_ARM_REQUIRED,
+    CONF_CODE_DISARM_REQUIRED,
     CONF_DHIP_PORT,
+    CONF_ENABLE_ARM_CONTROL,
     CONF_ENABLE_RESEARCH_FEATURES,
     CONF_HTTP_PORT,
     CONF_PERIODIC_RESYNC,
     CONF_REMATCH_EXISTING,
     CONF_ZONE_AREA_DECISIONS,
     DEFAULT_AREA_MATCH_THRESHOLD,
+    DEFAULT_ARM_MODES,
     DEFAULT_AUTO_AREA_MATCH,
+    DEFAULT_CODE_ARM_REQUIRED,
+    DEFAULT_CODE_DISARM_REQUIRED,
     DEFAULT_DHIP_PORT,
+    DEFAULT_ENABLE_ARM_CONTROL,
     DEFAULT_ENABLE_RESEARCH_FEATURES,
     DEFAULT_HTTP_PORT,
     DEFAULT_PERIODIC_RESYNC,
@@ -41,6 +56,7 @@ from .const import (
     ISSUE_INVENTORY_ERROR,
     ISSUE_NO_PRIMARY_ZONES,
     ISSUE_SERIAL_MISMATCH,
+    VERIFIED_ARM_MODES,
 )
 from .vendor.dahua.exceptions import LoginError
 
@@ -147,7 +163,20 @@ def _reauth_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     )
 
 
-def _behavior_schema(values: Mapping[str, Any]) -> vol.Schema:
+def _behavior_schema(
+    values: Mapping[str, Any], *, include_arm_control: bool = False
+) -> vol.Schema:
+    # Arm control is an options-only feature: first-time setup never offers it.
+    arm_control: dict[Any, Any] = (
+        {
+            vol.Required(
+                CONF_ENABLE_ARM_CONTROL,
+                default=values.get(CONF_ENABLE_ARM_CONTROL, DEFAULT_ENABLE_ARM_CONTROL),
+            ): bool
+        }
+        if include_arm_control
+        else {}
+    )
     return vol.Schema(
         {
             vol.Required(
@@ -164,8 +193,44 @@ def _behavior_schema(values: Mapping[str, Any]) -> vol.Schema:
                     CONF_ENABLE_RESEARCH_FEATURES, DEFAULT_ENABLE_RESEARCH_FEATURES
                 ),
             ): bool,
+            **arm_control,
         }
     )
+
+
+def _arm_control_schema(
+    values: Mapping[str, Any], *, ask_acknowledge: bool
+) -> vol.Schema:
+    """Arm control form. The stored code hash is never shown or pre-filled."""
+    modes = [m for m in VERIFIED_ARM_MODES if m in values.get(CONF_ARM_MODES, [])]
+    fields: dict[Any, Any] = {
+        vol.Optional(CONF_ARM_CODE): selector.TextSelector(
+            selector.TextSelectorConfig(
+                type=selector.TextSelectorType.PASSWORD, autocomplete="off"
+            )
+        ),
+        vol.Required(CONF_CLEAR_ARM_CODE, default=False): bool,
+        vol.Required(
+            CONF_CODE_DISARM_REQUIRED,
+            default=values.get(CONF_CODE_DISARM_REQUIRED, DEFAULT_CODE_DISARM_REQUIRED),
+        ): bool,
+        vol.Required(
+            CONF_CODE_ARM_REQUIRED,
+            default=values.get(CONF_CODE_ARM_REQUIRED, DEFAULT_CODE_ARM_REQUIRED),
+        ): bool,
+        vol.Required(
+            CONF_ARM_MODES, default=modes or list(DEFAULT_ARM_MODES)
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=list(VERIFIED_ARM_MODES),
+                multiple=True,
+                translation_key=CONF_ARM_MODES,
+            )
+        ),
+    }
+    if ask_acknowledge:
+        fields[vol.Required(CONF_ACKNOWLEDGE_CONTROL, default=False)] = bool
+    return vol.Schema(fields)
 
 
 def _area_candidates(
@@ -446,15 +511,9 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
         if user_input is not None:
             self._options = dict(current)
             self._options.update(user_input)
-            if self._options[CONF_AUTO_AREA_MATCH]:
-                if not _area_candidates(self.hass):
-                    return self.async_show_form(
-                        step_id="init",
-                        data_schema=_behavior_schema(user_input),
-                        errors={"base": "no_areas"},
-                    )
-                return await self.async_step_area_match()
-            return self.async_create_entry(data=self._options)
+            if self._options.get(CONF_ENABLE_ARM_CONTROL):
+                return await self.async_step_arm_control()
+            return await self._async_after_arm_control()
 
         suggested = {
             CONF_PERIODIC_RESYNC: current.get(
@@ -466,9 +525,69 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
             CONF_ENABLE_RESEARCH_FEATURES: current.get(
                 CONF_ENABLE_RESEARCH_FEATURES, DEFAULT_ENABLE_RESEARCH_FEATURES
             ),
+            CONF_ENABLE_ARM_CONTROL: current.get(
+                CONF_ENABLE_ARM_CONTROL, DEFAULT_ENABLE_ARM_CONTROL
+            ),
         }
         return self.async_show_form(
-            step_id="init", data_schema=_behavior_schema(suggested)
+            step_id="init",
+            data_schema=_behavior_schema(suggested, include_arm_control=True),
+        )
+
+    async def _async_after_arm_control(self) -> ConfigFlowResult:
+        """Continue to area matching, or finish."""
+        if self._options.get(CONF_AUTO_AREA_MATCH):
+            if not _area_candidates(self.hass):
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=_behavior_schema(
+                        self._options, include_arm_control=True
+                    ),
+                    errors={"base": "no_areas"},
+                )
+            return await self.async_step_area_match()
+        return self.async_create_entry(data=self._options)
+
+    async def async_step_arm_control(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        acknowledged = bool(self._options.get(CONF_ARM_CONTROL_ACK))
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            code = str(user_input.get(CONF_ARM_CODE) or "").strip()
+            if code and not arm_code.code_is_valid_format(code):
+                errors[CONF_ARM_CODE] = "invalid_code_format"
+            if not user_input.get(CONF_ARM_MODES):
+                errors[CONF_ARM_MODES] = "no_arm_modes"
+            if not acknowledged and not user_input.get(CONF_ACKNOWLEDGE_CONTROL):
+                errors["base"] = "acknowledge_required"
+            if not errors:
+                options = self._options
+                options[CONF_CODE_DISARM_REQUIRED] = bool(
+                    user_input[CONF_CODE_DISARM_REQUIRED]
+                )
+                options[CONF_CODE_ARM_REQUIRED] = bool(
+                    user_input[CONF_CODE_ARM_REQUIRED]
+                )
+                options[CONF_ARM_MODES] = [
+                    m for m in VERIFIED_ARM_MODES if m in user_input[CONF_ARM_MODES]
+                ]
+                options[CONF_ARM_CONTROL_ACK] = True
+                if code:
+                    # Only the salted hash is stored; the code is dropped here.
+                    options[
+                        CONF_ARM_CODE_HASH
+                    ] = await self.hass.async_add_executor_job(arm_code.hash_code, code)
+                    options.pop(CONF_ARM_CODE_ACK_NO_CODE, None)
+                elif user_input.get(CONF_CLEAR_ARM_CODE):
+                    options.pop(CONF_ARM_CODE_HASH, None)
+                return await self._async_after_arm_control()
+
+        values = {**self._options, **(user_input or {})}
+        return self.async_show_form(
+            step_id="arm_control",
+            data_schema=_arm_control_schema(values, ask_acknowledge=not acknowledged),
+            errors=errors,
         )
 
     async def async_step_area_match(

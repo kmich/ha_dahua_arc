@@ -20,6 +20,7 @@ from .protocol.cgi import (
     discover_multiio_parents,
     fetch_alarm_config,
 )
+from .protocol.control import ARM_COMMAND_SPEC, ArmController, CommandSpec
 from .protocol.engine import Reconciler, StateEngine
 from .protocol.inventory import (
     PRIMARY_SENSOR_CLASSES,
@@ -28,6 +29,7 @@ from .protocol.inventory import (
     InventoryRpcClient,
     RadioDeviceInfo,
     classify_alarm_record,
+    extract_area_zones,
     extract_arm_areas,
     extract_radio_devices,
     extract_zone_area_hints,
@@ -62,11 +64,13 @@ class ArcHub:
         password: str,
         periodic_resync_seconds: int = 300,
         enable_research_features: bool = False,
+        enable_arm_control: bool = False,
     ):
         self.host, self.http_port, self.dhip_port = host, http_port, dhip_port
         self.username, self.password = username, password
         self.periodic_resync_seconds = periodic_resync_seconds
         self.enable_research_features = enable_research_features
+        self.enable_arm_control = enable_arm_control
         self.zones: dict[int, Zone] = {}
         self.parents: dict[int, dict[str, Any]] = {}
         self.alarm_records: dict[int, dict[str, str]] = {}
@@ -76,6 +80,7 @@ class ArcHub:
         self.arm_state_probe: dict[str, Any] = {}
         self.inventory_error: str | None = None
         self.area_hints: dict[int, str] = {}
+        self.area_zones: dict[int, list[int]] = {}
         self.radio_devices: dict[int, RadioDeviceInfo] = {}
         self.event_catalog = EventCatalog()
         self._listeners: set[Callable[[set[int] | None], None]] = set()
@@ -102,6 +107,14 @@ class ArcHub:
         self.wpan_research: WPANResearchPoller | None = None
         self.pircam: PirCamMedia | None = None
         self.detector_test: DetectorTestController | None = None
+
+        # Arm/disarm control: None unless the user opted in AND a verified
+        # command spec exists. Tests may inject the fake spec.
+        self.arm_control: ArmController | None = None
+        self.arm_command_spec: CommandSpec | None = ARM_COMMAND_SPEC
+        self.allow_fake_arm_spec = False
+        self.arm_control_unsupported = False
+        self.arm_stop = threading.Event()
 
     # -- listeners ---------------------------------------------------------
 
@@ -164,6 +177,55 @@ class ArcHub:
                 self.on_auth_failed()
             except Exception:
                 _LOGGER.exception("ARC reauth trigger failed")
+
+    # -- arm/disarm control ------------------------------------------------
+
+    def setup_arm_control(self) -> None:
+        """Build the controller only when opted in and a real spec exists."""
+        self.arm_control = None
+        self.arm_control_unsupported = False
+        if not self.enable_arm_control or self.arming is None:
+            return
+        if self.arm_command_spec is None:
+            self.arm_control_unsupported = True
+            _LOGGER.warning(
+                "Arm control is enabled but this version has no verified arm "
+                "command for the ARC; no arm or disarm command will be sent"
+            )
+            return
+        self.arm_control = ArmController(
+            host=self.host,
+            port=self.dhip_port,
+            username=self.username,
+            password=self.password,
+            spec=self.arm_command_spec,
+            tracker=self.arming,
+            read_table=self._read_arm_table,
+            hub_available=lambda: self.available,
+            auth_failed=lambda: self.auth_failed,
+            on_auth_failed=self._handle_auth_failure,
+            stop_event=self.arm_stop,
+            allow_fake_spec=self.allow_fake_arm_spec,
+        )
+
+    def _read_arm_table(self) -> Any:
+        client = self.snapshot_client
+        if client is None:
+            raise RuntimeError("No snapshot session to read the arm table")
+        return client.read_config("AreaArmMode")
+
+    def open_zones(self, area_indexes: tuple[int, ...]) -> list[str] | None:
+        """Names of zones in the areas whose input is active now.
+
+        ``None`` when no zone state is known for those areas.
+        """
+        indexes = {
+            idx for area in area_indexes for idx in self.area_zones.get(area, [])
+        }
+        zones = [self.zones[idx] for idx in sorted(indexes) if idx in self.zones]
+        if not zones or all(zone.active is None for zone in zones):
+            return None
+        return sorted(zone.name for zone in zones if zone.active)
 
     # -- research delegation -----------------------------------------------
 
@@ -283,6 +345,8 @@ class ArcHub:
         self.arming = ArmingTracker(
             extract_arm_areas(self.rpc_inventory), self._notify_arm
         )
+        self.area_zones = extract_area_zones(self.rpc_inventory)
+        self.setup_arm_control()
 
         if self.enable_research_features:
             self.pircam = PirCamMedia(
@@ -483,6 +547,7 @@ class ArcHub:
                 self.research_refresh_inventory
             ),
             "arming": self.arming.diagnostics() if self.arming else None,
+            "arm_control": self.arm_control_diagnostics(),
             "arm_state_probe": redact_sensitive(self.arm_state_probe),
             "event_catalog": self.event_catalog.summary(),
             "wpan_research": (
@@ -534,7 +599,17 @@ class ArcHub:
             },
         }
 
+    def arm_control_diagnostics(self) -> dict[str, Any] | None:
+        if not self.enable_arm_control:
+            return None
+        if self.arm_control is None:
+            return {"enabled": True, "supported": False}
+        return {"enabled": True, "supported": True, **self.arm_control.diagnostics()}
+
     def stop(self) -> None:
+        # Release a command that is waiting for its outcome before anything
+        # else is torn down.
+        self.arm_stop.set()
         self._periodic_stop.set()
         if self.detector_test is not None:
             self.detector_test.cancel_timers()

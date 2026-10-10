@@ -6,6 +6,14 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Groundwork for opt-in arm/disarm control (design in `docs/arm-control/`): a new **Allow Home Assistant to arm and disarm the ARC** option (off by default), an optional Home Assistant code stored only as a salted hash, standard alarm control panels, and a repair when arm control is on without a code.
+
+### Known limitations
+
+- No arm or disarm command exists yet. The ARC's arm RPC has not been verified on hardware, so turning the option on only raises a repair saying arm control is not yet supported; no panels are created and nothing is sent to the ARC. The integration stays read-only.
+
 ## [0.4.0] - 2026-10-09
 
 ### Added
