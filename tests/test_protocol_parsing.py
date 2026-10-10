@@ -217,6 +217,7 @@ def test_protocol_layer_does_not_import_home_assistant() -> None:
         "    sys.modules[name] = mod\n"
         "import custom_components.dahua_arc.protocol.realtime\n"
         "import custom_components.dahua_arc.protocol.cgi\n"
+        "import custom_components.dahua_arc.protocol.control\n"
         "import custom_components.dahua_arc.research.wpan\n"
         "import custom_components.dahua_arc.research.pircam\n"
         "import custom_components.dahua_arc.research.detector_test\n"

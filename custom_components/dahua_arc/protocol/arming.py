@@ -26,9 +26,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from .util import safe_int, timestamp
 
@@ -78,6 +78,29 @@ SYSTEM_STATES = (*AREA_STATES, MIXED)
 # through a transient "mixed" state.
 NOTIFY_QUIET_SECONDS = 1.0
 NOTIFY_MAX_DELAY_SECONDS = 5.0
+
+
+WAIT_POLL_SECONDS = 0.25
+
+
+class OutcomeMark(NamedTuple):
+    """Counters taken before a command is sent.
+
+    Only events and table reads that arrive after the mark can confirm or
+    refuse that command, so earlier history never decides a new one.
+    """
+
+    event_seq: int
+    failure_seq: int
+    table_seq: int
+
+
+class WaitResult(NamedTuple):
+    """Result of :meth:`ArmingTracker.wait_for_outcome`."""
+
+    outcome: Literal["confirmed", "refused", "timeout", "stopped"]
+    confirmed_by: Literal["event", "table"] | None = None
+    open_zones: tuple[dict[str, Any], ...] = ()
 
 
 def arm_mode_state(raw_mode: str | None) -> str | None:
@@ -143,6 +166,8 @@ class ArmArea:
     raw_mode: str | None = None
     source: str | None = None
     last_event_seq: int = 0
+    last_failure_seq: int = 0
+    last_table_seq: int = 0
     profile: str | None = None
     trigger_mode: str | None = None
     changed_at: str | None = None
@@ -186,6 +211,10 @@ class ArmingTracker:
         self.quiet_seconds = quiet_seconds
         self.max_delay_seconds = max_delay_seconds
         self.lock = threading.RLock()
+        # Signalled on every arm event, failure, table apply and invalidate so
+        # a command waiting for its outcome wakes at once. The HA notification
+        # debounce below is separate and never delays it.
+        self._changed = threading.Condition(self.lock)
         self.last_failure: ArmFailure | None = None
         self.last_global_change: dict[str, Any] | None = None
         self.last_alarm: dict[str, Any] | None = None
@@ -196,6 +225,8 @@ class ArmingTracker:
         self.unknown_modes: set[str] = set()
         self.invalidations = 0
         self.event_sequence = 0
+        self.failure_sequence = 0
+        self.table_sequence = 0
         self.table_reads = 0
         self.table_corrections = 0
         self.table_stale_rejects = 0
@@ -244,6 +275,71 @@ class ArmingTracker:
         with self.lock:
             return self.event_sequence
 
+    def outcome_mark(self) -> OutcomeMark:
+        """Counters to pass to :meth:`wait_for_outcome` for a command sent now."""
+        with self.lock:
+            return OutcomeMark(
+                self.event_sequence, self.failure_sequence, self.table_sequence
+            )
+
+    def _evaluate(
+        self, mark: OutcomeMark, areas: Iterable[int], raw_mode: str
+    ) -> WaitResult | None:
+        """Decide a command from state newer than ``mark``; ``None`` if open."""
+        targets = [self.areas[index] for index in areas if index in self.areas]
+        if not targets:
+            return None
+        sources: set[str] = set()
+        for area in targets:
+            if area.raw_mode != raw_mode:
+                break
+            if area.last_event_seq > mark.event_seq:
+                sources.add("event")
+            elif area.source == SOURCE_TABLE and area.last_table_seq > mark.table_seq:
+                sources.add("table")
+            else:
+                break
+        else:
+            return WaitResult("confirmed", "event" if sources == {"event"} else "table")
+        refused = [a for a in targets if a.last_failure_seq > mark.failure_seq]
+        if refused:
+            zones = tuple(
+                zone
+                for area in refused
+                if area.last_failure is not None
+                for zone in area.last_failure.open_zones
+            )
+            return WaitResult("refused", None, zones)
+        return None
+
+    def wait_for_outcome(
+        self,
+        mark: OutcomeMark,
+        areas: Iterable[int],
+        raw_mode: str,
+        timeout: float,
+        stop_event: threading.Event | None = None,
+    ) -> WaitResult:
+        """Block until every target area reaches ``raw_mode`` or one refuses.
+
+        Confirmed by an ``AreaArmModeChange`` newer than the mark, or by a
+        table read newer than the mark. A reconnect (``invalidate``) does not
+        end the wait: the table read that follows it resolves it.
+        """
+        targets = tuple(areas)
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._changed:
+            while True:
+                result = self._evaluate(mark, targets, raw_mode)
+                if result is not None:
+                    return result
+                if stop_event is not None and stop_event.is_set():
+                    return WaitResult("stopped")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return WaitResult("timeout")
+                self._changed.wait(min(remaining, WAIT_POLL_SECONDS))
+
     def _note_mode(self, raw_mode: str | None) -> None:
         if raw_mode is not None and raw_mode not in ARM_MODES:
             if raw_mode not in self.unknown_modes:
@@ -259,6 +355,7 @@ class ArmingTracker:
         changed = False
         with self.lock:
             self.table_reads += 1
+            self.table_sequence += 1
             self.last_table_read = timestamp()
             self.last_table_error = None
             for index, area in self.areas.items():
@@ -270,6 +367,7 @@ class ArmingTracker:
                     continue
                 self._note_mode(raw_mode)
                 changed |= self._settle_alarm(area, raw_mode)
+                area.last_table_seq = self.table_sequence
                 if area.raw_mode == raw_mode:
                     continue
                 if area.raw_mode is not None:
@@ -278,6 +376,7 @@ class ArmingTracker:
                 area.raw_mode = raw_mode
                 area.source = SOURCE_TABLE
                 changed = True
+            self._changed.notify_all()
         if changed:
             self._schedule_notify()
 
@@ -319,12 +418,21 @@ class ArmingTracker:
                     area.alarm = None
                     changed = True
             self.invalidations += 1
+            self._changed.notify_all()
         if changed:
             self._schedule_notify()
 
     # -- events ------------------------------------------------------------
 
     def apply_event(self, event: dict[str, Any]) -> None:
+        try:
+            self._apply_event(event)
+        finally:
+            # Wake waiting commands even when a handler returned early.
+            with self.lock:
+                self._changed.notify_all()
+
+    def _apply_event(self, event: dict[str, Any]) -> None:
         code = str(event.get("Code") or "")
         if code not in TRACKED_EVENT_CODES:
             return
@@ -367,6 +475,8 @@ class ArmingTracker:
                     self.unknown_area_events += 1
                     return
                 if code == AREA_ARM_FAILURE_EVENT:
+                    self.failure_sequence += 1
+                    area.last_failure_seq = self.failure_sequence
                     area.last_failure = ArmFailure(
                         at=now,
                         raw_mode=raw_mode,
