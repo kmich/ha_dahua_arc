@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Fixed
+
+- The arm-method metadata probe added in 0.4.1 was rejected by the ARC (`Request invalid param!`). It now tries several parameter shapes on one method, records every result under `arm_state_probe.method_metadata_probe`, and uses the first shape that works for the rest. Metadata only; no discovered method is called.
+
 ## [0.4.1] - 2026-10-21
 
 ### Added

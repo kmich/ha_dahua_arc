@@ -182,6 +182,63 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
     assert arc.sockets == []
 
 
+def _probe_with_shape(cgi_records, shape: str | None):
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
+    arc.method_lists["AlarmRegion"] = [
+        "AlarmRegion.setArmMode",
+        "AlarmRegion.getArmMode",
+    ]
+    arc.method_signatures["AlarmRegion.setArmMode"] = ["object, object"]
+    arc.method_signatures["AlarmRegion.getArmMode"] = ["object"]
+    arc.metadata_shape = shape or "unsupported"
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            hub.refresh_arm_state_probe()
+            probe = hub.diagnostics()["arm_state_probe"]
+        finally:
+            hub.stop()
+    return arc, probe
+
+
+@pytest.mark.parametrize(
+    "shape", ["method_name", "method", "methodName", "name", "positional", "list"]
+)
+def test_arm_probe_finds_working_metadata_shape(cgi_records, shape) -> None:
+    arc, probe = _probe_with_shape(cgi_records, shape)
+    info = probe["method_metadata_probe"]
+    assert info["method"] == "AlarmRegion.setArmMode"
+    assert info["working_shape"] == shape
+    # Every shape is recorded; only the accepted one succeeds.
+    assert set(info["shapes"]) == {
+        "method_name",
+        "method",
+        "methodName",
+        "name",
+        "positional",
+        "list",
+    }
+    assert [n for n, r in info["shapes"].items() if r["signature"]["ok"]] == [shape]
+    # The rest of the candidates reuse the working shape.
+    metadata = probe["method_metadata"]
+    assert set(metadata) == {"AlarmRegion.setArmMode", "AlarmRegion.getArmMode"}
+    assert all(item["signature"]["ok"] for item in metadata.values())
+    for method in ("AlarmRegion.setArmMode", "AlarmRegion.getArmMode"):
+        assert method not in arc.calls
+
+
+def test_arm_probe_gives_up_when_no_metadata_shape_works(cgi_records) -> None:
+    arc, probe = _probe_with_shape(cgi_records, None)
+    info = probe["method_metadata_probe"]
+    assert info["working_shape"] is None
+    assert len(info["shapes"]) == 6
+    # No shape worked, so the remaining candidates are not requested.
+    assert probe["method_metadata"] == {}
+    assert arc.calls.count("system.methodSignature") == 6
+
+
 def test_arm_state_table_resync_and_missing_table(cgi_records) -> None:
     arc = _arc()  # no AreaArmMode table: the read is refused
     hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)

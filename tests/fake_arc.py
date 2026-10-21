@@ -168,6 +168,9 @@ class FakeArc:
         self.method_lists: dict[str, list[str]] = {}
         self.method_signatures: dict[str, Any] = {}
         self.method_helps: dict[str, Any] = {}
+        # Which system.methodSignature/methodHelp parameter shape this ARC
+        # accepts: a dict key, or "positional" / "list".
+        self.metadata_shape = "method_name"
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -363,14 +366,32 @@ class FakeArc:
             if methods is not None:
                 return {"result": True, "params": {"method": methods}}, 1
         if method in ("system.methodSignature", "system.methodHelp"):
+            # Mirrors the real ARC, which only accepts one parameter shape.
+            if self.metadata_shape == "positional":
+                name = params if isinstance(params, str) else None
+            elif self.metadata_shape == "list":
+                name = params[0] if isinstance(params, list) and params else None
+            else:
+                name = (
+                    params.get(self.metadata_shape)
+                    if isinstance(params, dict)
+                    and list(params) == [self.metadata_shape]
+                    else None
+                )
+            if name is None:
+                return {
+                    "result": False,
+                    "error": {"code": 268894211, "message": "Request invalid param!"},
+                }, 1
             known = (
                 self.method_signatures
                 if method == "system.methodSignature"
                 else self.method_helps
             )
-            value = known.get((params or {}).get("method_name"))
+            value = known.get(name)
             if value is not None:
                 return {"result": True, "params": {"signature": value}}, 1
+            return {"result": False, "error": {"code": 268959743}}, 1
         if method == "configManager.getConfig":
             table = self.config_tables.get(params.get("name"))
             if table is None:
