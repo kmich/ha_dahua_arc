@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 from collections import Counter, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,6 +88,17 @@ ARM_STATE_SERVICES = ("alarm", "alarmSubSystem", "alarmSubregion", "AlarmRegion"
 # system.methodSignature / system.methodHelp requested (metadata only).
 _ARM_METADATA_KEYWORDS = ("arm", "mode", "active", "defence", "cancel")
 _ARM_METADATA_LIMIT = 60
+# system.methodSignature / methodHelp reject {"method_name": ...} on at least
+# the ARC3800H ("Request invalid param!"), so the probe tries each shape on one
+# method and uses the first that works for the rest.
+_METADATA_PARAM_SHAPES: tuple[tuple[str, Callable[[str], Any]], ...] = (
+    ("method_name", lambda name: {"method_name": name}),
+    ("method", lambda name: {"method": name}),
+    ("methodName", lambda name: {"methodName": name}),
+    ("name", lambda name: {"name": name}),
+    ("positional", lambda name: name),
+    ("list", lambda name: [name]),
+)
 
 # Only read configuration families that can reasonably describe alarm hub
 # devices.  We intentionally do not dump the entire configuration database.
@@ -659,17 +670,13 @@ class InventoryRpcClient:
             finally:
                 self.transport = None
 
-    def request(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def request(self, method: str, params: Any = None) -> dict[str, Any]:
         transport = self.transport
         if transport is None:
             raise RuntimeError("Inventory DHIP transport unavailable")
         return transport.call(method, params or {}, fragmented=True, max_fragments=128)
 
-    def safe_request(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def safe_request(self, method: str, params: Any = None) -> dict[str, Any]:
         try:
             response = self.request(method, params)
             return {"ok": bool(response.get("result")), "response": response}
@@ -848,6 +855,7 @@ class InventoryRpcClient:
             "configs": {},
             "method_lists": {},
             "method_metadata": {},
+            "method_metadata_probe": None,
         }
         for name in ARM_STATE_CONFIG_NAMES:
             result["configs"][name] = self.safe_request(
@@ -870,13 +878,37 @@ class InventoryRpcClient:
                 for keyword in _ARM_METADATA_KEYWORDS
             )
         ]
-        for method in candidates[:_ARM_METADATA_LIMIT]:
-            result["method_metadata"][method] = {
-                "signature": self.safe_request(
-                    "system.methodSignature", {"method_name": method}
-                ),
-                "help": self.safe_request("system.methodHelp", {"method_name": method}),
-            }
+        candidates = candidates[:_ARM_METADATA_LIMIT]
+        if candidates:
+            probe_method = next(
+                (m for m in candidates if m.endswith(".setArmMode")), candidates[0]
+            )
+            result["method_metadata_probe"] = {"method": probe_method, "shapes": {}}
+            shape_name: str | None = None
+            build: Callable[[str], Any] | None = None
+            for name, builder in _METADATA_PARAM_SHAPES:
+                attempt = {
+                    "signature": self.safe_request(
+                        "system.methodSignature", builder(probe_method)
+                    ),
+                    "help": self.safe_request(
+                        "system.methodHelp", builder(probe_method)
+                    ),
+                }
+                result["method_metadata_probe"]["shapes"][name] = attempt
+                if shape_name is None and (
+                    attempt["signature"].get("ok") or attempt["help"].get("ok")
+                ):
+                    shape_name, build = name, builder
+            result["method_metadata_probe"]["working_shape"] = shape_name
+            if build is not None:
+                for method in candidates:
+                    result["method_metadata"][method] = {
+                        "signature": self.safe_request(
+                            "system.methodSignature", build(method)
+                        ),
+                        "help": self.safe_request("system.methodHelp", build(method)),
+                    }
         return result
 
 
