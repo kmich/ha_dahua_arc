@@ -84,6 +84,10 @@ _RESEARCH_CONFIG_NAMES = {
 # current arm-state source; see InventoryRpcClient.collect_arm_state_probe.
 ARM_STATE_CONFIG_NAMES = ("AreaArmMode", "DefenceStatus", "DefenceStatusOut")
 ARM_STATE_SERVICES = ("alarm", "alarmSubSystem", "alarmSubregion", "AlarmRegion")
+# Methods of ARM_STATE_SERVICES whose name contains one of these get
+# system.methodSignature / system.methodHelp requested (metadata only).
+_ARM_METADATA_KEYWORDS = ("arm", "mode", "active", "defence", "cancel")
+_ARM_METADATA_LIMIT = 60
 
 # Only read configuration families that can reasonably describe alarm hub
 # devices.  We intentionally do not dump the entire configuration database.
@@ -833,8 +837,9 @@ class InventoryRpcClient:
         """Read the candidate arm-state tables and arm-service method names.
 
         Used by diagnostics to find a current-state source for arm/disarm,
-        which the realtime events only report as changes. ``listMethod`` is
-        introspection only; no discovered method is called.
+        which the realtime events only report as changes. ``listMethod``,
+        ``methodSignature`` and ``methodHelp`` are introspection only; no
+        discovered method is ever called.
         """
         if self.transport is None:
             self.connect()
@@ -842,6 +847,7 @@ class InventoryRpcClient:
             "collected_at": timestamp(),
             "configs": {},
             "method_lists": {},
+            "method_metadata": {},
         }
         for name in ARM_STATE_CONFIG_NAMES:
             result["configs"][name] = self.safe_request(
@@ -854,6 +860,23 @@ class InventoryRpcClient:
                 if listing.get("ok")
                 else listing
             )
+        candidates = [
+            method
+            for methods in result["method_lists"].values()
+            if isinstance(methods, list)
+            for method in methods
+            if any(
+                keyword in method.rpartition(".")[2].casefold()
+                for keyword in _ARM_METADATA_KEYWORDS
+            )
+        ]
+        for method in candidates[:_ARM_METADATA_LIMIT]:
+            result["method_metadata"][method] = {
+                "signature": self.safe_request(
+                    "system.methodSignature", {"method_name": method}
+                ),
+                "help": self.safe_request("system.methodHelp", {"method_name": method}),
+            }
         return result
 
 
