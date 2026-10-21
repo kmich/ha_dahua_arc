@@ -111,7 +111,12 @@ def test_start_stream_events_and_stop(cgi_records) -> None:
 def test_arm_events_and_arm_state_probe(cgi_records) -> None:
     arc = _arc()
     arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
-    arc.method_lists["alarmSubSystem"] = ["alarmSubSystem.getState"]
+    arc.method_lists["alarmSubSystem"] = [
+        "alarmSubSystem.getState",
+        "alarmSubSystem.setActive",
+    ]
+    arc.method_lists["AlarmRegion"] = ["AlarmRegion.setArmMode", "AlarmRegion.getCaps"]
+    arc.method_signatures["AlarmRegion.setArmMode"] = ["object, object"]
     hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
     redraws: list[None] = []
     hub.add_arm_listener(lambda: redraws.append(None))
@@ -145,11 +150,32 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
             assert probe["configs"]["AreaArmMode"]["ok"] is True
             assert probe["configs"]["DefenceStatus"]["ok"] is False
             assert probe["method_lists"]["alarmSubSystem"] == [
-                "alarmSubSystem.getState"
+                "alarmSubSystem.getState",
+                "alarmSubSystem.setActive",
             ]
-            assert probe["method_lists"]["AlarmRegion"]["ok"] is False
+            assert probe["method_lists"]["alarmSubregion"]["ok"] is False
+            # Signature/help are requested only for arm-related names, and
+            # failures are retained.
+            metadata = probe["method_metadata"]
+            assert set(metadata) == {
+                "alarmSubSystem.setActive",
+                "AlarmRegion.setArmMode",
+            }
+            set_arm = metadata["AlarmRegion.setArmMode"]
+            assert set_arm["signature"]["ok"] is True
+            assert set_arm["signature"]["response"]["params"]["signature"] == [
+                "object, object"
+            ]
+            assert set_arm["help"]["ok"] is False
             # Introspection only: nothing discovered is ever called.
-            assert "alarmSubSystem.getState" not in arc.calls
+            for method in (
+                "alarmSubSystem.getState",
+                "alarmSubSystem.setActive",
+                "AlarmRegion.setArmMode",
+                "AlarmRegion.getCaps",
+            ):
+                assert method not in arc.calls
+            assert "system.methodSignature" in arc.calls
             assert hub.diagnostics()["arming"]["areas"][1]["raw_mode"] == "p1"
         finally:
             hub.stop()

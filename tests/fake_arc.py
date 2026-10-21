@@ -166,6 +166,8 @@ class FakeArc:
         self.calls: list[str] = []
         # Service -> method names answered by "<service>.listMethod".
         self.method_lists: dict[str, list[str]] = {}
+        self.method_signatures: dict[str, Any] = {}
+        self.method_helps: dict[str, Any] = {}
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -360,6 +362,15 @@ class FakeArc:
             methods = self.method_lists.get(method.removesuffix(".listMethod"))
             if methods is not None:
                 return {"result": True, "params": {"method": methods}}, 1
+        if method in ("system.methodSignature", "system.methodHelp"):
+            known = (
+                self.method_signatures
+                if method == "system.methodSignature"
+                else self.method_helps
+            )
+            value = known.get((params or {}).get("method_name"))
+            if value is not None:
+                return {"result": True, "params": {"signature": value}}, 1
         if method == "configManager.getConfig":
             table = self.config_tables.get(params.get("name"))
             if table is None:
