@@ -6,10 +6,11 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-21
+
 ### Added
 
 - Groundwork for opt-in arm/disarm control (design in `docs/arm-control/`): a new **Allow Home Assistant to arm and disarm the ARC** option (off by default), an optional Home Assistant code stored only as a salted hash, standard alarm control panels, and a repair when arm control is on without a code.
-
 - Diagnostics now include `system.methodSignature` and `system.methodHelp` results for the arm-related methods of the `alarm`, `alarmSubSystem`, `alarmSubregion` and `AlarmRegion` services (`arm_state_probe.method_metadata`), to help identify the ARC's arm command. Metadata only; no discovered method is called.
 
 ### Known limitations
@@ -100,7 +101,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.2.0...v0.3.0
