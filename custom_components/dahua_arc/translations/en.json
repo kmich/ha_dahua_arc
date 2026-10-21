@@ -96,16 +96,18 @@
     "step": {
       "init": {
         "title": "Dahua ARC options",
-        "description": "Adjust reconciliation and smart area matching. Saving options reloads the integration.",
+        "description": "Adjust reconciliation, area matching and arm control. Saving options reloads the integration.",
         "data": {
           "periodic_resync_seconds": "Authoritative resync interval (seconds)",
           "auto_area_match": "Smartly assign unassigned devices and sensors to Home Assistant areas",
-          "enable_research_features": "Enable PIRCam / LowRateWPAN research tools"
+          "enable_research_features": "Enable PIRCam / LowRateWPAN research tools",
+          "enable_arm_control": "Allow Home Assistant to arm and disarm the ARC"
         },
         "data_description": {
           "periodic_resync_seconds": "300 seconds is recommended for normal operation.",
           "auto_area_match": "When enabled, only entities without an explicit area are considered. Disabling this does not remove previous area assignments.",
-          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation."
+          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation.",
+          "enable_arm_control": "Off by default. When on, Home Assistant can arm and disarm the alarm from dashboards, automations and voice. You can require a code on the next screen."
         }
       },
       "area_match": {
@@ -128,10 +130,30 @@
         "data": {
           "confirm": "Apply these smart matches"
         }
+      },
+      "arm_control": {
+        "title": "Arm and disarm control",
+        "description": "Home Assistant will send arm and disarm commands to the ARC and confirm each one from the ARC's own events. Anything that can run Home Assistant actions can use this, including automations and voice assistants. Set a code to restrict it.",
+        "data": {
+          "arm_code": "Code",
+          "clear_arm_code": "Remove the code",
+          "code_disarm_required": "Require the code to disarm",
+          "code_arm_required": "Require the code to arm",
+          "arm_modes": "Arm modes offered",
+          "acknowledge_control": "I understand that Home Assistant can now disarm my alarm"
+        },
+        "data_description": {
+          "arm_code": "4 to 8 digits. Leave empty to keep the current code. This is a Home Assistant code, not an ARC user PIN.",
+          "clear_arm_code": "Removes the stored code.",
+          "arm_modes": "Which arm actions Home Assistant offers."
+        }
       }
     },
     "error": {
-      "no_areas": "No Home Assistant areas exist yet. Create at least one area or disable smart area matching."
+      "no_areas": "No Home Assistant areas exist yet. Create at least one area or disable smart area matching.",
+      "acknowledge_required": "Confirm that you understand Home Assistant will be able to disarm the alarm.",
+      "invalid_code_format": "The code must be 4 to 8 digits.",
+      "no_arm_modes": "Choose at least one arm mode."
     }
   },
   "issues": {
@@ -160,6 +182,24 @@
     "serial_mismatch": {
       "title": "A different Dahua ARC answers at {host}",
       "description": "The ARC at {host} reports a different serial number than the one this integration entry was set up with, so it was not loaded to protect your existing entities and automations. If the hub moved to a new address, use **Reconfigure** to point the entry at the right address. If the ARC was replaced, add it as a new integration instead."
+    },
+    "arm_control_without_code": {
+      "title": "Dahua ARC can disarm your alarm without a code",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Use arm control without a code?",
+            "description": "Arm control is on and no code is set, so any dashboard user, automation or voice assistant can disarm the ARC. Set a code under Settings > Devices & services > Dahua ARC > Configure, or submit to keep using arm control without a code."
+          }
+        },
+        "abort": {
+          "entry_not_found": "The Dahua ARC config entry no longer exists."
+        }
+      }
+    },
+    "arm_control_unsupported": {
+      "title": "Arm control is not yet supported on this firmware",
+      "description": "Arm control is turned on, but this version of the integration has no verified arm command for the ARC, so it does not create alarm panels and never sends an arm or disarm command. Turn the option off, or wait for a release that supports your firmware."
     }
   },
   "entity": {
@@ -308,6 +348,57 @@
       "stop_detector_test": {
         "name": "Stop detector test"
       }
+    },
+    "alarm_control_panel": {
+      "area_alarm_panel": {
+        "name": "{area}"
+      }
+    }
+  },
+  "selector": {
+    "arm_modes": {
+      "options": {
+        "armed_home": "Home",
+        "armed_away": "Away"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_code": {
+      "message": "The code is incorrect."
+    },
+    "invalid_code_locked": {
+      "message": "Too many incorrect codes. Try again in {seconds} seconds."
+    },
+    "code_required": {
+      "message": "A code is required."
+    },
+    "arm_unavailable": {
+      "message": "Arm and disarm are unavailable while the ARC is offline."
+    },
+    "arm_busy": {
+      "message": "Another arm or disarm command is still running. Try again in a few seconds."
+    },
+    "arm_refused_open_zones": {
+      "message": "The ARC refused to arm {areas}: {zones} open. Close them and try again."
+    },
+    "arm_refused": {
+      "message": "The ARC refused to arm {areas}."
+    },
+    "arm_not_permitted": {
+      "message": "The ARC user configured in Home Assistant is not allowed to arm or disarm. Use an ARC user with arm/disarm rights."
+    },
+    "arm_unconfirmed": {
+      "message": "The ARC accepted the command but did not confirm the change within {seconds} seconds. Check the panel before trying again."
+    },
+    "arm_unreachable": {
+      "message": "Could not reach the ARC to send the command: {error}"
+    },
+    "arm_auth_failed": {
+      "message": "The ARC rejected the stored credentials. Reauthenticate the integration."
+    },
+    "arm_failed": {
+      "message": "The ARC rejected the command (error {code}: {message})."
     }
   }
 }

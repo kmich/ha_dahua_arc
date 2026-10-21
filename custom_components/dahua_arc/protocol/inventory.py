@@ -421,6 +421,26 @@ def extract_arm_areas(inventory: dict[str, Any]) -> dict[int, str]:
     return result
 
 
+def extract_area_zones(inventory: dict[str, Any]) -> dict[int, list[int]]:
+    """Map arm-event area index -> ``Alarm[]`` indexes of the area's zones.
+
+    Uses the same area indexing as :func:`extract_arm_areas`; only enabled
+    areas are included.
+    """
+    table = _candidate_table(inventory, "AlarmSubSystem")
+    result: dict[int, list[int]] = {}
+    if not isinstance(table, list):
+        return result
+    for position, subsystem in enumerate(table):
+        if not isinstance(subsystem, dict) or not subsystem.get("Enable"):
+            continue
+        area_id = safe_int(subsystem.get("AreaId"))
+        index = area_id - 1 if area_id is not None and area_id > 0 else position
+        zones = {safe_int(idx) for idx in subsystem.get("Zone") or []}
+        result[index] = sorted(z for z in zones if z is not None and z >= 0)
+    return result
+
+
 def extract_radio_devices(
     inventory: dict[str, Any],
     records: dict[int, dict[str, str]],
