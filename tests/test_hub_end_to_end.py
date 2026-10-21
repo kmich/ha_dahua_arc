@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from custom_components.dahua_arc.hub import ArcHub, probe_connection
+from custom_components.dahua_arc.protocol.inventory import _GETTER_PROBES
 from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
 from tests.fake_arc import ARM_METHOD, FakeArc
 from tests.hub_factory import (
@@ -225,8 +226,8 @@ def test_arm_probe_finds_working_metadata_shape(cgi_records, shape) -> None:
     metadata = probe["method_metadata"]
     assert set(metadata) == {"AlarmRegion.setArmMode", "AlarmRegion.getArmMode"}
     assert all(item["signature"]["ok"] for item in metadata.values())
-    for method in ("AlarmRegion.setArmMode", "AlarmRegion.getArmMode"):
-        assert method not in arc.calls
+    # Only the metadata of the setter is requested; the setter is never called.
+    assert "AlarmRegion.setArmMode" not in arc.calls
 
 
 def test_arm_probe_gives_up_when_no_metadata_shape_works(cgi_records) -> None:
@@ -237,6 +238,56 @@ def test_arm_probe_gives_up_when_no_metadata_shape_works(cgi_records) -> None:
     # No shape worked, so the remaining candidates are not requested.
     assert probe["method_metadata"] == {}
     assert arc.calls.count("system.methodSignature") == 6
+
+
+def test_getter_probe_is_read_only_and_records_every_shape(cgi_records) -> None:
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
+    arc.getters["AlarmRegion.getArmMode"] = lambda p: (
+        {"Areas": [{"Mode": "D"}]} if p == {"Areas": [0]} else None
+    )
+    arc.getters["AlarmRegion.getUserArmModeAuth"] = lambda p: (
+        {"Auth": True} if p == {"UserID": 0} else None
+    )
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            hub.refresh_arm_state_probe()
+            probe = hub.diagnostics()["arm_state_probe"]["getter_probe"]
+        finally:
+            hub.stop()
+    assert set(probe) == {
+        "AlarmRegion.getArmMode",
+        "AlarmRegion.getZoneArmMode",
+        "AlarmRegion.getUserArmModeAuth",
+    }
+    arm_mode = probe["AlarmRegion.getArmMode"]
+    assert len(arm_mode) == len(_GETTER_PROBES[0][1])
+    assert [k for k, r in arm_mode.items() if r["ok"]] == ['{"Areas": [0]}']
+    assert arm_mode['{"Areas": [0]}']["response"]["params"] == {
+        "Areas": [{"Mode": "D"}]
+    }
+    assert arm_mode["{}"]["ok"] is False
+    assert [
+        k for k, r in probe["AlarmRegion.getUserArmModeAuth"].items() if r["ok"]
+    ] == ['{"UserID": 0}']
+    assert not any(r["ok"] for r in probe["AlarmRegion.getZoneArmMode"].values())
+    # Read-only: nothing that writes, starts, stops or cancels is ever sent.
+    writes = [
+        call
+        for call in arc.calls
+        if call.rsplit(".", 1)[-1].startswith(
+            ("set", "start", "stop", "add", "delete", "modify", "alarmCancel")
+        )
+    ]
+    assert writes == []
+
+
+def test_getter_probe_only_lists_getters() -> None:
+    for method, shapes in _GETTER_PROBES:
+        assert method.rsplit(".", 1)[-1].startswith("get"), method
+        assert shapes
 
 
 def test_arm_state_table_resync_and_missing_table(cgi_records) -> None:
