@@ -9,6 +9,7 @@ realtime event codes observed by the integration.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -91,6 +92,50 @@ _ARM_METADATA_LIMIT = 60
 # system.methodSignature / methodHelp reject {"method_name": ...} on at least
 # the ARC3800H ("Request invalid param!"), so the probe tries each shape on one
 # method and uses the first that works for the rest.
+# Read-only getters tried with guessed parameter shapes, to learn how the ARC
+# addresses areas, zones and users. Every method here must be a ``get*`` call;
+# the probe records each outcome and never acts on a result. Area 0 / id 1 are
+# the first area's zero-based index and one-based id.
+_GETTER_PROBES: tuple[tuple[str, tuple[dict[str, Any], ...]], ...] = (
+    (
+        "AlarmRegion.getArmMode",
+        (
+            {},
+            {"Areas": [0]},
+            {"Areas": [1]},
+            {"Area": 0},
+            {"AreaIndex": 0},
+            {"AreaID": 1},
+            {"AreaId": 1},
+            {"Index": 0},
+            {"Indexes": [0]},
+            {"Condition": {"Areas": [0]}},
+        ),
+    ),
+    (
+        "AlarmRegion.getZoneArmMode",
+        (
+            {},
+            {"Areas": [0]},
+            {"Area": 0},
+            {"AreaIndex": 0},
+            {"Index": 0},
+            {"Zones": [0]},
+            {"ZoneIndex": 0},
+        ),
+    ),
+    (
+        "AlarmRegion.getUserArmModeAuth",
+        (
+            {},
+            {"UserID": 0},
+            {"UserId": 0},
+            {"UserIndex": 0},
+            {"Index": 0},
+            {"Areas": [0]},
+        ),
+    ),
+)
 _METADATA_PARAM_SHAPES: tuple[tuple[str, Callable[[str], Any]], ...] = (
     ("method_name", lambda name: {"method_name": name}),
     ("method", lambda name: {"method": name}),
@@ -856,6 +901,7 @@ class InventoryRpcClient:
             "method_lists": {},
             "method_metadata": {},
             "method_metadata_probe": None,
+            "getter_probe": {},
         }
         for name in ARM_STATE_CONFIG_NAMES:
             result["configs"][name] = self.safe_request(
@@ -909,6 +955,11 @@ class InventoryRpcClient:
                         ),
                         "help": self.safe_request("system.methodHelp", build(method)),
                     }
+        for method, shapes in _GETTER_PROBES:
+            result["getter_probe"][method] = {
+                json.dumps(params, sort_keys=True): self.safe_request(method, params)
+                for params in shapes
+            }
         return result
 
 

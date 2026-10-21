@@ -171,6 +171,9 @@ class FakeArc:
         # Which system.methodSignature/methodHelp parameter shape this ARC
         # accepts: a dict key, or "positional" / "list".
         self.metadata_shape = "method_name"
+        # method -> callable(params) returning a reply payload, or None to
+        # refuse the parameter shape.
+        self.getters: dict[str, Callable[[Any], Any]] = {}
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -392,6 +395,14 @@ class FakeArc:
             if value is not None:
                 return {"result": True, "params": {"signature": value}}, 1
             return {"result": False, "error": {"code": 268959743}}, 1
+        if method in self.getters:
+            reply = self.getters[method](params)
+            if reply is not None:
+                return {"result": True, "params": reply}, 1
+            return {
+                "result": False,
+                "error": {"code": 268894211, "message": "Request invalid param!"},
+            }, 1
         if method == "configManager.getConfig":
             table = self.config_tables.get(params.get("name"))
             if table is None:
