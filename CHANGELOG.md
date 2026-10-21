@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Diagnostics now include a read-only getter probe (`arm_state_probe.getter_probe`): `AlarmRegion.getArmMode`, `getZoneArmMode` and `getUserArmModeAuth` are called with several guessed parameter shapes and every result is recorded, to learn how the ARC addresses areas and zones. Only `get*` methods are called; nothing is changed on the ARC.
+
 ## [0.4.2] - 2026-10-21
 
 ### Fixed
