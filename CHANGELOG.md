@@ -6,6 +6,8 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
 ### Added
 
 - Diagnostics now include a read-only getter probe (`arm_state_probe.getter_probe`): `AlarmRegion.getArmMode`, `getZoneArmMode` and `getUserArmModeAuth` are called with several guessed parameter shapes and every result is recorded, to learn how the ARC addresses areas and zones. Only `get*` methods are called; nothing is changed on the ARC.
@@ -111,7 +113,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.3.1...v0.4.0
