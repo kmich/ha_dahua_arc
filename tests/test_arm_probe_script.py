@@ -27,7 +27,7 @@ def probe() -> ModuleType:
 
 @pytest.fixture(autouse=True)
 def allow_fake_service(probe: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(probe, "ALLOWED_SERVICES", ("FakeArc",))
+    monkeypatch.setattr(probe, "ALLOWED_SERVICES", ("FakeArc", "AlarmRegion"))
 
 
 def _arc(modes: list[str] | None = None) -> FakeArc:
@@ -438,3 +438,131 @@ def test_code_shapes_are_disarm_only_with_the_code_masked(probe) -> None:
         masked = build(2, probe.CODE_PLACEHOLDER, 1)
         assert "D" in probe.string_leaves(masked), name
         probe.check_disarm_only(masked, ["D", "D", "D"])
+
+
+def _probe_args(probe: ModuleType, *extra: str):
+    return probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--probe-client-types", *extra]
+    )
+
+
+def _client_type_arc() -> FakeArc:
+    arc = _arc()
+    arc.login_client_types = {"Web3.0", "NetKeyboard"}
+    arc.getters["AlarmRegion.getArmMode"] = lambda _p: {"armMode": [{"Mode": "D"}]}
+    arc.getters["AlarmRegion.getZoneArmMode"] = lambda _p: {"Zones": [1]}
+    # Only a keyboard-type session may call it; others get the generic error.
+    arc.getter_client_types["AlarmRegion.getZoneArmMode"] = {"NetKeyboard"}
+    return arc
+
+
+def test_client_type_probe_shows_which_type_the_arc_accepts(probe) -> None:
+    arc = _client_type_arc()
+    lines: list[str] = []
+    args = _probe_args(probe)
+    with arc.patch():
+        results = probe.probe_client_types(args, PASSWORD, emit=lines.append)
+    by_type = {r["client_type"]: r for r in results}
+    assert list(by_type) == list(probe.CLIENT_TYPES)
+    assert by_type["Local"]["login"] == "failed (code 268894211)"
+
+    def outcome(entry, method, params):
+        (call,) = [
+            c for c in entry["calls"] if c["method"] == method and c["params"] == params
+        ]
+        return call
+
+    web = by_type["Web3.0"]
+    assert web["login"] == "ok"
+    assert outcome(web, "AlarmRegion.getArmMode", {})["ok"] is True
+    zone = outcome(web, "AlarmRegion.getZoneArmMode", {})
+    assert zone["ok"] is False
+    assert zone["error_code"] == -267976701
+    keyboard = by_type["NetKeyboard"]
+    zone_kb = outcome(keyboard, "AlarmRegion.getZoneArmMode", {})
+    assert zone_kb["ok"] is True
+    assert zone_kb["reply_keys"] == ["Zones"]
+    # Only key names are kept: no reply value is stored.
+    assert "[1]" not in json.dumps(results)
+    assert any("NetKeyboard" in line and "login ok" in line for line in lines)
+
+
+def test_client_type_probe_is_read_only(probe) -> None:
+    arc = _client_type_arc()
+    with arc.patch():
+        probe.probe_client_types(_probe_args(probe), PASSWORD, emit=lambda _m: None)
+    assert arc.arm_requests == []
+    sent = [c for c in arc.calls if c not in ("global.login", "global.logout")]
+    assert sent
+    assert all(c.rsplit(".", 1)[-1].startswith("get") for c in sent), sent
+
+
+def test_client_type_probe_stops_on_a_lockout_risk(probe) -> None:
+    arc = _client_type_arc()
+    lines: list[str] = []
+    with arc.patch():
+        results = probe.probe_client_types(
+            _probe_args(probe), "wrong-password", emit=lines.append
+        )
+    assert len(results) == 1  # one wrong-password login, then it stops
+    assert results[0]["login"] == "failed (code 268632080)"
+    assert any("Stopping" in line for line in lines)
+
+
+def test_custom_client_types_are_used(probe) -> None:
+    arc = _client_type_arc()
+    args = _probe_args(probe, "--client-types", "NetKeyboard, Web3.0")
+    with arc.patch():
+        results = probe.probe_client_types(args, PASSWORD, emit=lambda _m: None)
+    assert [r["client_type"] for r in results] == ["NetKeyboard", "Web3.0"]
+
+
+def test_client_type_option_is_used_for_the_trial_login(probe) -> None:
+    arc = _arc()
+    arc.login_client_types = {"NetKeyboard"}
+    with pytest.raises(probe.LoginError), arc.patch():
+        probe.run(_args(probe, {"Mode": "D", "Areas": [0]}), PASSWORD, emit=print)
+    transcript, _ = _run(
+        probe, arc, {"Mode": "D", "Areas": [0]}, "--client-type", "NetKeyboard"
+    )
+    assert transcript["reply"]["result"] is True
+    assert len(arc.arm_requests) == 1
+
+
+def test_probe_mode_takes_no_shape_and_needs_no_panel_flag(probe) -> None:
+    args = _probe_args(probe)
+    assert args.probe_client_types is True
+    with pytest.raises(SystemExit):
+        _probe_args(probe, "--shape", "areas-mode")
+    with pytest.raises(SystemExit):
+        probe.parse_args(["--host", "h", "--user", "u", "--i-am-at-the-panel"])
+
+
+def test_main_runs_the_client_type_probe_and_writes_a_transcript(
+    probe, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    arc = _client_type_arc()
+    monkeypatch.setenv("ARC_PASSWORD", PASSWORD)
+    out = tmp_path / "ct.json"
+    with arc.patch():
+        code = probe.main(
+            [
+                "--host",
+                "192.0.2.10",
+                "--user",
+                "admin",
+                "--probe-client-types",
+                "--out",
+                str(out),
+            ]
+        )
+    assert code == 0
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert [r["client_type"] for r in written["results"]] == list(probe.CLIENT_TYPES)
+    assert PASSWORD not in out.read_text(encoding="utf-8")
+    assert "NetKeyboard" in capsys.readouterr().out
+
+
+def test_every_client_type_probe_call_is_a_getter(probe) -> None:
+    for method, _params in probe.CLIENT_TYPE_GETTERS:
+        assert method.rsplit(".", 1)[-1].startswith("get"), method
