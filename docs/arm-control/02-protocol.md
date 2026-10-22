@@ -56,6 +56,88 @@ refusal, and Q9 (no separate exit-delay event code appeared for the Home arm).
 Because DMSS reaches the ARC through the relay, a LAN capture of DMSS will not
 show the request.
 
+## 2c. Arm-search results (2026-10-22): what was tried and what it showed
+
+The supervised trials (`scripts/arm_probe.py`) and diagnostics probes below were
+run against the owner's ARC3800H over DHIP (TCP 5000), logged in as the admin
+user. **No arm or disarm call has been verified.** This section records the
+evidence so that nobody repeats it blindly.
+
+### Disarm-only trials
+
+Every trial sent a disarm (`D`) while all 32 areas were already `D`, so none could
+arm anything; the arm table was unchanged after each one and no arm event
+followed. One request per run, no retries.
+
+| Runs | Method | Parameter shapes | Result |
+|---|---|---|---|
+| 1 to 6 | `AlarmRegion.setArmMode` | `{"Mode":"D","Areas":[0]}`, `{"Area":0,"Mode":"D"}`, `{"Index":0,"Mode":"D"}`, `{"AreaID":1,"Mode":"D"}`, `{"Areas":[{"Index":0,"Mode":"D"}]}`, `{"armMode":[{"Index":0,"Mode":"D"}]}` | `-267976701` every time |
+| 7 | `alarm.setArmMode` | `{"Mode":"D","Areas":[0]}` | `-267976701` |
+| 8 | `alarmSubregion.setArmMode` | `{"Mode":"D","Areas":[0]}` | `-267976703` (the only different code) |
+| 9, 10 | `AlarmRegion.setArmMode` | `Areas` shape plus the keypad user code as `Password`; then also `UserNumber: 1` | `-267976701` |
+| 14 to 18 | `AlarmRegion.setArmMode` | `Zones` shapes: `{"Mode":"D","Zones":[0]}`, with `Password`, `{"ArmMode":"D","Zones":[0]}`, `{"Zones":[{"Index":0,"Mode":"D"}]}`, with `UserNumber` and `Password` | `-267976701` every time |
+
+Runs 11 to 13 were not performed. The user code was typed at a hidden prompt and
+never printed or stored.
+
+### Key sweep (read-only)
+
+`--sweep-keys` called `AlarmRegion.getZoneArmMode` and `getUserArmModeAuth` once
+with `{}` and then with each of 46 candidate key names, each with the values `0`
+and `[0]` (186 calls, one session). Both baselines are `-267976701`. Exactly one
+call differed: `getZoneArmMode {"Zones": [0]}` returned `268632080` (a code that
+usually means unknown user or wrong password). The scalar `0` did not change the
+error, and no key changed `getUserArmModeAuth`.
+
+### Login client types
+
+`Web3.0` and `Local` log in and behave identically (`getArmMode` works; the other
+getters give the generic error). A `NetKeyboard` login matches the IPS signature
+`ET EXPLOIT Dahua Netkeyboard Authentication Bypass`: the owner's UniFi gateway
+blocked the traffic and Home Assistant lost its ARC connection for about ten
+minutes. `Dahua3.0` and `Dahua3.0-Web3.0` timed out at login. **Do not probe
+these client types**; the tool now refuses them.
+
+### Capabilities and users (read-only diagnostics)
+
+- `AlarmRegion.getCaps`: `AreaArmMode` supports `AtHome`, `OutDoor` and `DisArm`
+  (not `TotalArm`); `SupportArmProfile` and `SupportOneClickArmMode` are true;
+  32 alarm areas; `KeypadUserCount` and `NetworkUserCount` are 0.
+- `AlarmUserManager.getUserInfoAll` (structure only, values dropped): each of 4
+  users has `Id`, `Name`, `Nickname`, `UserNumber`, `UserType`, `Group`, `Status`,
+  `Password`, `DuressPassword`, `AuthorityList` (5 strings), `SubSystems` (32
+  integers, one per area), `Card`, `AssociatedUser` and `Reserved`. The ARC
+  attributes each arm to such a user, as the `OperatorInfo` on DMSS events shows.
+- `AlarmUserManager` and `AlarmKeyboard` list their methods, but every signature
+  and help text is empty.
+
+### Public sources
+
+No public documentation of `AlarmRegion.setArmMode` or any DHIP arm request was
+found. An HSYCO integration page for the Dahua Alarm Hub 2 describes arming and
+disarming over an SIA DC-09 Alarm Receiving Center session (the panel connects to
+the receiver; AES-128; one queued command per heartbeat; `away`, `home`, `force`,
+`disarm` per area). It does not give the wire encoding, and it covers a related
+model, not the ARC3800H.
+
+### Reading of the evidence (inference, not verified)
+
+An error that does not change with the parameters, the method family or the
+presence of a valid user code suggests the ARC refuses the call **before it reads
+the parameters**: the same generic code also answers two read-only getters. DMSS
+arms are reported with `NetClientAddr: 127.0.0.1`, which fits the ARC arming
+through an internal or cloud channel. So the arm methods may only be usable from
+that channel, not from a remote DHIP login. None of this has been confirmed.
+
+### Status and what is left
+
+Phase 0 did not find a usable arm call, so Phase 2b (plugging in a verified
+`CommandSpec`) is blocked and the opt-in control layer stays inert on real
+hardware: the integration is read-only. What could still unblock it: Dahua's
+internal or partner documentation for the ARC family; the SIA DC-09 Alarm
+Receiving Center route (needs a receiver and the undocumented command encoding);
+or a capture taken on the ARC itself, which is not possible from the LAN.
+
 ## 3. Candidate methods (hypotheses, unverified)
 
 These come from Dahua NetSDK naming and the RPC services the hub already

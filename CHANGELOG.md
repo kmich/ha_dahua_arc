@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Documentation
+
+- Recorded the arm/disarm search results in `docs/arm-control/02-protocol.md` (all disarm-only trials, the key sweep, login client types, capabilities and user fields, and what is left) and clarified in the README why the integration cannot arm or disarm.
+
 ### Changed
 
 - `scripts/arm_probe.py` (developer tool, not shipped): new disarm-only shapes built on the `Zones` key, the one parameter name the ARC recognised in the key sweep (`zones-mode`, `zones-armmode`, `zones-objects`, `zones-mode-1based`, and code-bearing `zones-password`, `zones-usernumber`, `zones-userid`, `zones-user-object`).
