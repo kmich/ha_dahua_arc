@@ -56,5 +56,24 @@ ARM_MODE_NIGHT = "armed_night"
 VERIFIED_ARM_MODES = (ARM_MODE_HOME, ARM_MODE_AWAY)
 DEFAULT_ARM_MODES = list(VERIFIED_ARM_MODES)
 
+# Arm control through a relay-driven keyfob (docs/arm-control/06-keyfob-relay.md).
+CONF_ARM_BACKEND = "arm_backend"
+CONF_KEYFOB_HOME_ENTITY = "keyfob_home_entity"
+CONF_KEYFOB_AWAY_ENTITY = "keyfob_away_entity"
+CONF_KEYFOB_DISARM_ENTITY = "keyfob_disarm_entity"
+CONF_KEYFOB_ALLOW_DISARM = "keyfob_allow_disarm"
+CONF_KEYFOB_PRESS_MS = "keyfob_press_ms"
+CONF_KEYFOB_WAIT_SECONDS = "keyfob_wait_seconds"
+
+ARM_BACKEND_DHIP = "dhip"
+ARM_BACKEND_KEYFOB = "keyfob"
+ARM_BACKENDS = (ARM_BACKEND_DHIP, ARM_BACKEND_KEYFOB)
+DEFAULT_ARM_BACKEND = ARM_BACKEND_DHIP
+DEFAULT_KEYFOB_ALLOW_DISARM = False
+DEFAULT_KEYFOB_PRESS_MS = 400
+DEFAULT_KEYFOB_WAIT_SECONDS = 15
+KEYFOB_PRESS_DOMAINS = ("button", "input_button", "switch", "script")
+
 ISSUE_ARM_CONTROL_WITHOUT_CODE = "arm_control_without_code"
+ISSUE_KEYFOB_ENTITY_MISSING = "keyfob_entity_missing"
 ISSUE_ARM_CONTROL_UNSUPPORTED = "arm_control_unsupported"
