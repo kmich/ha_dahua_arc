@@ -14,7 +14,7 @@ In normal operation the integration is **read-only**: it never arms, disarms, tr
 - The current arm state is read from the ARC's `AreaArmMode` table when the realtime stream connects or reconnects and on every periodic resync, so it is known at startup and a missed event is corrected. A table read never overrides a newer arm event. If the table cannot be read, arm state stays **unknown** until the next arm or disarm. Home (`p1`), Away (`T`) and disarm (`D`) are verified on hardware; the second partial mode (`p2`) is not yet. An unrecognised mode leaves the state unknown and appears in diagnostics.
 - Alarms are shown read-only, from the ARC's `AlarmLocal` events: an **Alarm** binary sensor for the whole system and an **<area> alarm** binary sensor for every enabled Dahua area. An area's alarm turns on when a zone triggers it and stays on until the area is disarmed (or the ARC sends `AlarmClear`), even after the input restores. Attributes list the zones that triggered it, with times. Verified on hardware for an instant-zone intrusion while armed Home.
 - The ARC has no readable "alarm in progress" table, so alarm state comes from events alone. It is **unknown** until the area's arm state is known, then off until an alarm arrives. An alarm that is on when the realtime stream reconnects stays on until a table read shows the area disarmed. An alarm that *starts* while Home Assistant is disconnected is not reported.
-- The integration does **not** expose an alarm-control-panel entity and cannot arm or disarm. The ARC's arm call could not be found over the local DHIP connection on an ARC3800H: more than a dozen disarm-only trials and a parameter-name sweep all returned the same generic error, and the ARC appears to accept arm requests only from its own internal/cloud channel. The evidence is recorded in [docs/arm-control/02-protocol.md](docs/arm-control/02-protocol.md#2c-arm-search-results-2026-10-22-what-was-tried-and-what-it-showed). Arming and disarming stay in the Dahua DMSS app or at a keypad.
+- The integration does **not** expose an alarm-control-panel entity and cannot arm or disarm. The ARC's arm call could not be found over the local DHIP connection on an ARC3800H: more than a dozen disarm-only trials and a parameter-name sweep all returned the same generic error, and the ARC appears to accept arm requests only from its own internal/cloud channel. The evidence is recorded in [docs/arm-control/02-protocol.md](docs/arm-control/02-protocol.md#2c-arm-search-results-2026-10-22-what-was-tried-and-what-it-showed). Arming and disarming stay in the Dahua DMSS app or at a keypad, unless you build the optional [keyfob relay](#arming-with-a-keyfob-relay-optional-experimental).
 - PIRCam / LowRateWPAN research tools are isolated behind `enable_research_features`, which defaults to **off**. Wireless PIR motion remains unverified.
 
 ## Installation
@@ -62,6 +62,23 @@ actions:
 ```
 
 To hear about refused arm attempts, trigger on any change of **Last arming failure**; its `open_zones` attribute lists the zones that blocked the arm. Per-area alarm and arm-state entities work the same way.
+
+## Arming with a keyfob relay (optional, experimental)
+
+The ARC's own arm command is not available to Home Assistant, but the ARC does accept arm and disarm from a **paired wireless keyfob**. If a *spare* keyfob's Home, Away and Disarm buttons are wired to relays that Home Assistant controls, the integration can press them for you. The ARC then arms itself with all its own checks, and the result is confirmed from the ARC's own events like everything else. This has **not been verified on hardware yet**; follow the acceptance checklist in [docs/arm-control/06-keyfob-relay.md](docs/arm-control/06-keyfob-relay.md) before relying on it.
+
+1. Pair a spare keyfob to the ARC in DMSS and try its buttons by hand. Do not modify the keyfob you use every day.
+2. Bridge the spare's Home, Away and Disarm contacts with isolated outputs (a relay or opto-coupler, for example on an ESPHome board or a Shelly). Leave **SOS unwired**.
+3. Make Home Assistant entities that pulse each relay: a `button`, a `switch` (the integration turns it on, holds it, and turns it off) or a `script`.
+4. In the integration's options, enable arm control, set **How commands are sent** to *Paired keyfob pressed by relays*, and choose the entity for each button.
+
+What to expect:
+
+- Only the whole-system alarm panel exists in this mode: a keyfob arms the areas it is assigned to in the ARC, not areas one by one.
+- One press per command, and it is **never repeated** automatically. If the ARC does not confirm in time, the action fails with a message saying the press may still have worked; check the panel before trying again.
+- An arm refused because a zone is open reports the zone, as the ARC does.
+- **Disarm is off by default.** Turn it on only if you want Home Assistant to be able to disarm the house, and keep a code set. A relay that is unavailable is never pressed, and a missing relay entity raises a repair.
+- Treat the relay entities like the alarm panel itself: keep your Home Assistant account secured and do not expose them to voice assistants or shared dashboards.
 
 ## Smart areas
 

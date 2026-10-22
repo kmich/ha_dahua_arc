@@ -9,13 +9,19 @@ from homeassistant.core import HomeAssistant
 from . import DahuaArcConfigEntry
 from .const import (
     CONF_ARC_SERIAL,
+    CONF_ARM_BACKEND,
     CONF_ARM_CODE_HASH,
     CONF_ARM_MODES,
     CONF_CODE_ARM_REQUIRED,
     CONF_CODE_DISARM_REQUIRED,
     CONF_ENABLE_ARM_CONTROL,
+    CONF_KEYFOB_ALLOW_DISARM,
+    CONF_KEYFOB_PRESS_MS,
+    CONF_KEYFOB_WAIT_SECONDS,
     CONF_ZONE_AREA_OWNERSHIP,
+    DEFAULT_ARM_BACKEND,
 )
+from .keyfob_bridge import keyfob_buttons
 
 
 async def async_get_config_entry_diagnostics(
@@ -39,6 +45,15 @@ async def async_get_config_entry_diagnostics(
             "code_disarm_required": entry.options.get(CONF_CODE_DISARM_REQUIRED),
             "code_arm_required": entry.options.get(CONF_CODE_ARM_REQUIRED),
             "modes": entry.options.get(CONF_ARM_MODES),
+            "backend": entry.options.get(CONF_ARM_BACKEND, DEFAULT_ARM_BACKEND),
+            # Which keyfob buttons are mapped and the disarm opt-in; never the
+            # entity ids themselves.
+            "keyfob": {
+                "modes_mapped": keyfob_buttons(entry.options).mapped_modes(),
+                "disarm_allowed": bool(entry.options.get(CONF_KEYFOB_ALLOW_DISARM)),
+                "press_ms": entry.options.get(CONF_KEYFOB_PRESS_MS),
+                "wait_seconds": entry.options.get(CONF_KEYFOB_WAIT_SECONDS),
+            },
         },
         "area_ownership": dict(entry.options.get(CONF_ZONE_AREA_OWNERSHIP, {})),
         "runtime": entry.runtime_data.diagnostics(),

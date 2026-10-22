@@ -22,10 +22,15 @@ from .area_assignment import decide_zone_areas
 from .area_matcher import AreaCandidate
 from .client import probe_connection
 from .const import (
+    ARM_BACKEND_KEYFOB,
+    ARM_BACKENDS,
+    ARM_MODE_AWAY,
+    ARM_MODE_HOME,
     CONF_ACKNOWLEDGE_CONTROL,
     CONF_ARC_SERIAL,
     CONF_AREA_MATCH_AREAS,
     CONF_AREA_MATCH_THRESHOLD,
+    CONF_ARM_BACKEND,
     CONF_ARM_CODE,
     CONF_ARM_CODE_ACK_NO_CODE,
     CONF_ARM_CODE_HASH,
@@ -39,10 +44,17 @@ from .const import (
     CONF_ENABLE_ARM_CONTROL,
     CONF_ENABLE_RESEARCH_FEATURES,
     CONF_HTTP_PORT,
+    CONF_KEYFOB_ALLOW_DISARM,
+    CONF_KEYFOB_AWAY_ENTITY,
+    CONF_KEYFOB_DISARM_ENTITY,
+    CONF_KEYFOB_HOME_ENTITY,
+    CONF_KEYFOB_PRESS_MS,
+    CONF_KEYFOB_WAIT_SECONDS,
     CONF_PERIODIC_RESYNC,
     CONF_REMATCH_EXISTING,
     CONF_ZONE_AREA_DECISIONS,
     DEFAULT_AREA_MATCH_THRESHOLD,
+    DEFAULT_ARM_BACKEND,
     DEFAULT_ARM_MODES,
     DEFAULT_AUTO_AREA_MATCH,
     DEFAULT_CODE_ARM_REQUIRED,
@@ -51,11 +63,15 @@ from .const import (
     DEFAULT_ENABLE_ARM_CONTROL,
     DEFAULT_ENABLE_RESEARCH_FEATURES,
     DEFAULT_HTTP_PORT,
+    DEFAULT_KEYFOB_ALLOW_DISARM,
+    DEFAULT_KEYFOB_PRESS_MS,
+    DEFAULT_KEYFOB_WAIT_SECONDS,
     DEFAULT_PERIODIC_RESYNC,
     DOMAIN,
     ISSUE_INVENTORY_ERROR,
     ISSUE_NO_PRIMARY_ZONES,
     ISSUE_SERIAL_MISMATCH,
+    KEYFOB_PRESS_DOMAINS,
     VERIFIED_ARM_MODES,
 )
 from .vendor.dahua.exceptions import LoginError
@@ -211,6 +227,14 @@ def _arm_control_schema(
         ),
         vol.Required(CONF_CLEAR_ARM_CODE, default=False): bool,
         vol.Required(
+            CONF_ARM_BACKEND,
+            default=values.get(CONF_ARM_BACKEND, DEFAULT_ARM_BACKEND),
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=list(ARM_BACKENDS), translation_key=CONF_ARM_BACKEND
+            )
+        ),
+        vol.Required(
             CONF_CODE_DISARM_REQUIRED,
             default=values.get(CONF_CODE_DISARM_REQUIRED, DEFAULT_CODE_DISARM_REQUIRED),
         ): bool,
@@ -231,6 +255,46 @@ def _arm_control_schema(
     if ask_acknowledge:
         fields[vol.Required(CONF_ACKNOWLEDGE_CONTROL, default=False)] = bool
     return vol.Schema(fields)
+
+
+def _keyfob_entity_field(key: str, values: Mapping[str, Any]) -> tuple[Any, Any]:
+    marker = vol.Optional(key, description={"suggested_value": values.get(key)})
+    return marker, selector.EntitySelector(
+        selector.EntitySelectorConfig(domain=list(KEYFOB_PRESS_DOMAINS))
+    )
+
+
+def _arm_keyfob_schema(values: Mapping[str, Any]) -> vol.Schema:
+    """Which entities press the keyfob's buttons. SOS is deliberately absent."""
+    fields: dict[Any, Any] = dict(
+        _keyfob_entity_field(key, values)
+        for key in (
+            CONF_KEYFOB_HOME_ENTITY,
+            CONF_KEYFOB_AWAY_ENTITY,
+            CONF_KEYFOB_DISARM_ENTITY,
+        )
+    )
+    return vol.Schema(
+        {
+            **fields,
+            vol.Required(
+                CONF_KEYFOB_ALLOW_DISARM,
+                default=values.get(
+                    CONF_KEYFOB_ALLOW_DISARM, DEFAULT_KEYFOB_ALLOW_DISARM
+                ),
+            ): bool,
+            vol.Required(
+                CONF_KEYFOB_PRESS_MS,
+                default=values.get(CONF_KEYFOB_PRESS_MS, DEFAULT_KEYFOB_PRESS_MS),
+            ): vol.All(vol.Coerce(int), vol.Range(min=100, max=2000)),
+            vol.Required(
+                CONF_KEYFOB_WAIT_SECONDS,
+                default=values.get(
+                    CONF_KEYFOB_WAIT_SECONDS, DEFAULT_KEYFOB_WAIT_SECONDS
+                ),
+            ): vol.All(vol.Coerce(int), vol.Range(min=5, max=60)),
+        }
+    )
 
 
 def _area_candidates(
@@ -573,6 +637,7 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
                     m for m in VERIFIED_ARM_MODES if m in user_input[CONF_ARM_MODES]
                 ]
                 options[CONF_ARM_CONTROL_ACK] = True
+                options[CONF_ARM_BACKEND] = user_input[CONF_ARM_BACKEND]
                 if code:
                     # Only the salted hash is stored; the code is dropped here.
                     options[
@@ -581,12 +646,58 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
                     options.pop(CONF_ARM_CODE_ACK_NO_CODE, None)
                 elif user_input.get(CONF_CLEAR_ARM_CODE):
                     options.pop(CONF_ARM_CODE_HASH, None)
+                if options[CONF_ARM_BACKEND] == ARM_BACKEND_KEYFOB:
+                    return await self.async_step_arm_keyfob()
                 return await self._async_after_arm_control()
 
         values = {**self._options, **(user_input or {})}
         return self.async_show_form(
             step_id="arm_control",
             data_schema=_arm_control_schema(values, ask_acknowledge=not acknowledged),
+            errors=errors,
+        )
+
+    async def async_step_arm_keyfob(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the entities that press the keyfob's Home, Away and Disarm."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            modes = self._options.get(CONF_ARM_MODES, [])
+            needed = {
+                ARM_MODE_HOME: CONF_KEYFOB_HOME_ENTITY,
+                ARM_MODE_AWAY: CONF_KEYFOB_AWAY_ENTITY,
+            }
+            for mode, key in needed.items():
+                if mode in modes and not user_input.get(key):
+                    errors[key] = "keyfob_entity_required"
+            allow_disarm = bool(user_input[CONF_KEYFOB_ALLOW_DISARM])
+            if allow_disarm and not user_input.get(CONF_KEYFOB_DISARM_ENTITY):
+                errors[CONF_KEYFOB_DISARM_ENTITY] = "keyfob_disarm_entity_required"
+            if not errors:
+                options = self._options
+                for key in (
+                    CONF_KEYFOB_HOME_ENTITY,
+                    CONF_KEYFOB_AWAY_ENTITY,
+                    CONF_KEYFOB_DISARM_ENTITY,
+                ):
+                    entity_id = user_input.get(key)
+                    if entity_id and (key != CONF_KEYFOB_DISARM_ENTITY or allow_disarm):
+                        options[key] = entity_id
+                    else:
+                        # An unused or disarm-disabled relay is never remembered.
+                        options.pop(key, None)
+                options[CONF_KEYFOB_ALLOW_DISARM] = allow_disarm
+                options[CONF_KEYFOB_PRESS_MS] = int(user_input[CONF_KEYFOB_PRESS_MS])
+                options[CONF_KEYFOB_WAIT_SECONDS] = int(
+                    user_input[CONF_KEYFOB_WAIT_SECONDS]
+                )
+                return await self._async_after_arm_control()
+
+        values = {**self._options, **(user_input or {})}
+        return self.async_show_form(
+            step_id="arm_keyfob",
+            data_schema=_arm_keyfob_schema(values),
             errors=errors,
         )
 
