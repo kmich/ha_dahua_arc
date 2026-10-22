@@ -31,6 +31,7 @@ partial mode (`p2`), and exit/entry-delay states.
 | 3 | [03-ha-integration.md](03-ha-integration.md) | Entities, unique IDs, state mapping, options flow, code handling, actions, errors, repairs, diagnostics |
 | 4 | [04-frontend.md](04-frontend.md) | What the user sees: options screens, more-info dialog, dashboard cards (with YAML), error messages, notifications |
 | 5 | [05-implementation-plan.md](05-implementation-plan.md) | Phased work breakdown, file-by-file changes, tests, acceptance criteria, risks |
+| 6 | [06-keyfob-relay.md](06-keyfob-relay.md) | **Update 2026-10-22.** The ARC's arm RPC could not be found (02 section 2c), so this is the plan for arming through a relay-driven keyfob, reusing the control layer |
 
 ## Decisions already taken in this design
 

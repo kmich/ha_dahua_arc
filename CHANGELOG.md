@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Documentation
 
+- Design note `docs/arm-control/06-keyfob-relay.md`: arming and disarming the ARC from Home Assistant by pressing a spare paired keyfob through relay-driven button entities, with confirmation from the ARC's own events. Design only; nothing is implemented yet.
+
+### Documentation
+
 - Recorded the arm/disarm search results in `docs/arm-control/02-protocol.md` (all disarm-only trials, the key sweep, login client types, capabilities and user fields, and what is left) and clarified in the README why the integration cannot arm or disarm.
 
 ### Changed
