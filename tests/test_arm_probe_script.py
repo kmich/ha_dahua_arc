@@ -717,3 +717,38 @@ def test_main_runs_the_key_sweep_and_writes_a_transcript(
     assert set(written["methods"]) == set(probe_methods())
     assert PASSWORD not in out.read_text(encoding="utf-8")
     assert "recognised" in capsys.readouterr().out
+
+
+ZONES_SHAPES = ("zones-mode", "zones-armmode", "zones-mode-1based")
+ZONES_CODE_SHAPES = ("zones-password", "zones-usernumber", "zones-userid")
+
+
+@pytest.mark.parametrize("shape", ZONES_SHAPES)
+def test_zones_shapes_send_a_disarm_with_the_zones_key(probe, shape) -> None:
+    arc = _arc()
+    transcript, _ = _run_code(probe, arc, "--shape", shape, "--area", "1")
+    (request,) = arc.arm_requests
+    assert request.get("Zones") in ([1], [2])
+    assert "D" in probe.string_leaves(request)
+    assert transcript["modes_changed"] is False
+
+
+@pytest.mark.parametrize("shape", ZONES_CODE_SHAPES)
+def test_zones_code_shapes_carry_the_code_and_hide_it(probe, shape) -> None:
+    arc = _arc()
+    transcript, lines = _run_code(probe, arc, "--shape", shape, "--prompt-code")
+    (request,) = arc.arm_requests
+    assert request["Zones"] == [0]
+    assert CODE in probe.string_leaves(request)
+    assert CODE not in "\n".join(lines)
+    assert CODE not in json.dumps(transcript)
+
+
+def test_all_new_zones_shapes_are_listed_and_disarm_only(probe) -> None:
+    for name in (*ZONES_SHAPES, "zones-objects"):
+        params = probe.SHAPES[name](0)
+        assert probe.string_leaves(params) == ["D"], name
+        probe.check_disarm_only(params, ["D", "D"])
+    for name in (*ZONES_CODE_SHAPES, "zones-user-object"):
+        masked = probe.CODE_SHAPES[name](0, probe.CODE_PLACEHOLDER, 1)
+        probe.check_disarm_only(masked, ["D", "D"])

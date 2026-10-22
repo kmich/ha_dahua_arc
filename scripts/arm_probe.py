@@ -116,6 +116,11 @@ SHAPES: dict[str, Callable[[int], dict[str, Any]]] = {
     "areaid-mode": lambda a: {"AreaID": a + 1, "Mode": DISARMED},
     "areas-objects": lambda a: {"Areas": [{"Index": a, "Mode": DISARMED}]},
     "armmode-objects": lambda a: {"armMode": [{"Index": a, "Mode": DISARMED}]},
+    # "Zones" (as a list) is the one key the ARC recognised in --sweep-keys.
+    "zones-mode": lambda a: {"Mode": DISARMED, "Zones": [a]},
+    "zones-armmode": lambda a: {"ArmMode": DISARMED, "Zones": [a]},
+    "zones-objects": lambda a: {"Zones": [{"Index": a, "Mode": DISARMED}]},
+    "zones-mode-1based": lambda a: {"Mode": DISARMED, "Zones": [a + 1]},
 }
 # The alarm users on the ARC have a Password (the arming code) and a UserNumber,
 # so the arm call may need them. These guesses carry the code; ``code`` is the real
@@ -148,6 +153,24 @@ CODE_SHAPES: dict[str, Callable[[int, str, int], dict[str, Any]]] = {
     "armmode-objects-password": lambda a, c, n: {
         "armMode": [{"Index": a, "Mode": DISARMED}],
         "Password": c,
+    },
+    "zones-password": lambda a, c, n: {"Mode": DISARMED, "Zones": [a], "Password": c},
+    "zones-usernumber": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Zones": [a],
+        "UserNumber": n,
+        "Password": c,
+    },
+    "zones-userid": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Zones": [a],
+        "UserID": n,
+        "Password": c,
+    },
+    "zones-user-object": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Zones": [a],
+        "User": {"UserNumber": n, "Password": c},
     },
 }
 DEFAULT_METHOD = "AlarmRegion.setArmMode"
