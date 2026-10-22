@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Added
 
+- Diagnostics now include `AlarmRegion.getCaps` and the method names (plus signature/help metadata) of the `AlarmUserManager` and `AlarmKeyboard` services (`arm_state_probe.alarm_region_caps`, `user_service_methods`, `user_service_metadata`), to find out how the ARC models arming users. Only `listMethod` and metadata calls are made for those services; no user data or codes are read.
+
+### Added
+
 - `scripts/arm_probe.py`: a standalone, never-shipped script for supervised single-call arm/disarm trials against a real ARC (developer tool; not part of the integration).
 
 ## [0.4.3] - 2026-10-21

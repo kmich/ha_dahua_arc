@@ -89,6 +89,11 @@ ARM_STATE_SERVICES = ("alarm", "alarmSubSystem", "alarmSubregion", "AlarmRegion"
 # system.methodSignature / system.methodHelp requested (metadata only).
 _ARM_METADATA_KEYWORDS = ("arm", "mode", "active", "defence", "cancel")
 _ARM_METADATA_LIMIT = 60
+# Services that may model users or keypads. Only their method names (and the
+# signature/help metadata of those names) are requested: no method of these
+# services is ever called, so no user data or codes are read.
+_USER_SERVICES = ("AlarmUserManager", "AlarmKeyboard")
+_USER_METADATA_LIMIT = 80
 # system.methodSignature / methodHelp reject {"method_name": ...} on at least
 # the ARC3800H ("Request invalid param!"), so the probe tries each shape on one
 # method and uses the first that works for the rest.
@@ -902,6 +907,9 @@ class InventoryRpcClient:
             "method_metadata": {},
             "method_metadata_probe": None,
             "getter_probe": {},
+            "alarm_region_caps": None,
+            "user_service_methods": {},
+            "user_service_metadata": {},
         }
         for name in ARM_STATE_CONFIG_NAMES:
             result["configs"][name] = self.safe_request(
@@ -925,13 +933,13 @@ class InventoryRpcClient:
             )
         ]
         candidates = candidates[:_ARM_METADATA_LIMIT]
+        build: Callable[[str], Any] | None = None
         if candidates:
             probe_method = next(
                 (m for m in candidates if m.endswith(".setArmMode")), candidates[0]
             )
             result["method_metadata_probe"] = {"method": probe_method, "shapes": {}}
             shape_name: str | None = None
-            build: Callable[[str], Any] | None = None
             for name, builder in _METADATA_PARAM_SHAPES:
                 attempt = {
                     "signature": self.safe_request(
@@ -960,6 +968,26 @@ class InventoryRpcClient:
                 json.dumps(params, sort_keys=True): self.safe_request(method, params)
                 for params in shapes
             }
+        result["alarm_region_caps"] = self.safe_request("AlarmRegion.getCaps")
+        user_methods: list[str] = []
+        for service in _USER_SERVICES:
+            listing = self.safe_request(f"{service}.listMethod")
+            names = (
+                extract_method_names(listing["response"], service)
+                if listing.get("ok")
+                else listing
+            )
+            result["user_service_methods"][service] = names
+            if isinstance(names, list):
+                user_methods.extend(names)
+        if build is not None:
+            for method in user_methods[:_USER_METADATA_LIMIT]:
+                result["user_service_metadata"][method] = {
+                    "signature": self.safe_request(
+                        "system.methodSignature", build(method)
+                    ),
+                    "help": self.safe_request("system.methodHelp", build(method)),
+                }
         return result
 
 

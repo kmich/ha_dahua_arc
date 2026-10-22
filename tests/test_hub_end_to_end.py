@@ -173,7 +173,6 @@ def test_arm_events_and_arm_state_probe(cgi_records) -> None:
                 "alarmSubSystem.getState",
                 "alarmSubSystem.setActive",
                 "AlarmRegion.setArmMode",
-                "AlarmRegion.getCaps",
             ):
                 assert method not in arc.calls
             assert "system.methodSignature" in arc.calls
@@ -282,6 +281,68 @@ def test_getter_probe_is_read_only_and_records_every_shape(cgi_records) -> None:
         )
     ]
     assert writes == []
+
+
+def _user_services_probe(cgi_records, shape: str | None):
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
+    arc.method_lists["AlarmRegion"] = ["AlarmRegion.setArmMode"]
+    arc.method_lists["AlarmUserManager"] = [
+        "AlarmUserManager.getUsers",
+        "AlarmUserManager.setUserCode",
+    ]
+    arc.method_lists["AlarmKeyboard"] = ["AlarmKeyboard.getKeyboards"]
+    arc.method_signatures["AlarmRegion.setArmMode"] = ["object"]
+    arc.method_signatures["AlarmUserManager.getUsers"] = ["array"]
+    arc.getters["AlarmRegion.getCaps"] = lambda _p: {"caps": {"Zones": 64}}
+    arc.metadata_shape = shape or "unsupported"
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            hub.refresh_arm_state_probe()
+            probe = hub.diagnostics()["arm_state_probe"]
+        finally:
+            hub.stop()
+    return arc, probe
+
+
+def test_user_service_probe_lists_methods_and_never_calls_them(cgi_records) -> None:
+    arc, probe = _user_services_probe(cgi_records, "method_name")
+    assert probe["alarm_region_caps"]["ok"] is True
+    assert probe["alarm_region_caps"]["response"]["params"] == {"caps": {"Zones": 64}}
+    assert probe["user_service_methods"] == {
+        "AlarmUserManager": [
+            "AlarmUserManager.getUsers",
+            "AlarmUserManager.setUserCode",
+        ],
+        "AlarmKeyboard": ["AlarmKeyboard.getKeyboards"],
+    }
+    metadata = probe["user_service_metadata"]
+    assert set(metadata) == {
+        "AlarmUserManager.getUsers",
+        "AlarmUserManager.setUserCode",
+        "AlarmKeyboard.getKeyboards",
+    }
+    assert metadata["AlarmUserManager.getUsers"]["signature"]["ok"] is True
+    # Only listMethod is ever sent to the user services: no user data or codes.
+    user_calls = [
+        call
+        for call in arc.calls
+        if call.startswith(("AlarmUserManager.", "AlarmKeyboard."))
+    ]
+    assert user_calls == ["AlarmUserManager.listMethod", "AlarmKeyboard.listMethod"]
+
+
+def test_user_service_metadata_skipped_when_no_shape_works(cgi_records) -> None:
+    arc, probe = _user_services_probe(cgi_records, None)
+    assert probe["method_metadata_probe"]["working_shape"] is None
+    assert probe["user_service_metadata"] == {}
+    # The method lists are still recorded.
+    assert (
+        "AlarmUserManager.getUsers" in probe["user_service_methods"]["AlarmUserManager"]
+    )
+    assert not [c for c in arc.calls if c.startswith("AlarmUserManager.get")]
 
 
 def test_getter_probe_only_lists_getters() -> None:
