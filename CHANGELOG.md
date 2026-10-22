@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Changed
 
+- `scripts/arm_probe.py` (developer tool, not shipped): new disarm-only shapes built on the `Zones` key, the one parameter name the ARC recognised in the key sweep (`zones-mode`, `zones-armmode`, `zones-objects`, `zones-mode-1based`, and code-bearing `zones-password`, `zones-usernumber`, `zones-userid`, `zones-user-object`).
+
+### Changed
+
 - `scripts/arm_probe.py` (developer tool, not shipped): a read-only `--sweep-keys` mode calls two getters on one `Web3.0` session with about 50 candidate parameter key names and reports the keys whose error differs from the baseline, i.e. names the ARC recognises. It stops at once on any transport error.
 
 ### Changed
