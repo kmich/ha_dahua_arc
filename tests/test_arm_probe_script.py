@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -207,3 +209,89 @@ def test_script_is_not_in_the_release_package() -> None:
     ]
     assert all(not path.startswith("scripts/") for path in shipped)
     assert not any("arm_probe" in path for path in shipped)
+
+
+def test_script_runs_without_home_assistant_installed() -> None:
+    """It must not import the integration package (which needs Home Assistant)."""
+    imports = [
+        line
+        for line in SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("import ", "from "))
+    ]
+    assert not any("custom_components" in line for line in imports)
+    result = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--i-am-at-the-panel" in result.stdout
+
+
+def test_transcript_does_not_keep_a_pin_in_the_params(probe) -> None:
+    arc = _arc()
+    transcript, _ = _run(probe, arc, {"Mode": "D", "Areas": [0], "PIN": "1234"})
+    assert transcript["params"]["PIN"] == "**REDACTED**"
+    assert "1234" not in json.dumps(transcript)
+
+
+def test_every_builtin_shape_is_disarm_only(probe) -> None:
+    for name, build in probe.SHAPES.items():
+        params = build(3)
+        assert probe.string_leaves(params) == ["D"], name
+        # Passes the guard on an all-disarmed panel.
+        probe.check_disarm_only(params, ["D", "D", "D", "D"])
+
+
+def test_shape_option_sends_the_shape_for_the_chosen_area(probe) -> None:
+    arc = _arc()
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--method",
+            ARM_METHOD,
+            "--shape",
+            "areas-mode",
+            "--area",
+            "2",
+            "--i-am-at-the-panel",
+            "--yes",
+            "--listen",
+            "0.3",
+        ]
+    )
+    with arc.patch():
+        try:
+            probe.run(args, PASSWORD, emit=lambda _: None)
+        finally:
+            arc.close_timers()
+    assert arc.arm_requests == [{"Mode": "D", "Areas": [2]}]
+
+
+def test_shape_and_params_json_are_mutually_exclusive(probe) -> None:
+    with pytest.raises(SystemExit):
+        probe.parse_args(
+            [
+                "--host",
+                "h",
+                "--user",
+                "u",
+                "--shape",
+                "areas-mode",
+                "--params-json",
+                "{}",
+                "--i-am-at-the-panel",
+            ]
+        )
+
+
+def test_list_shapes_prints_and_exits(probe, capsys) -> None:
+    with pytest.raises(SystemExit) as stop:
+        probe.parse_args(["--list-shapes"])
+    assert stop.value.code == 0
+    assert "areas-mode" in capsys.readouterr().out
