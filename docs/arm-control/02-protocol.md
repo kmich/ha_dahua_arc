@@ -36,6 +36,26 @@ discovery work that must come before any command code is final.
 | Q11 | Does disarm need the same method with `D`, or a separate method? | Builder |
 | Q12 | Does the method accept arming several areas in one call, and is that atomic? | One call vs one call per area |
 
+## 2b. Observed so far (diagnostics from the owner's ARC, 2026-10-21)
+
+Facts only; each came from a diagnostics download, none from sending a command.
+
+| Finding | Detail |
+|---|---|
+| Methods exist | `AlarmRegion.setArmMode`, `alarmSubregion.setArmMode`, `alarm.setArmMode`, `alarm.setDefenceMode`, `alarmSubSystem.setActive` are all listed and all answer `system.methodSignature` / `system.methodHelp` |
+| Introspection is empty | The accepted call shape is `{"methodName": "<method>"}` (the other five tried are rejected with `Request invalid param!`), but every signature and help text is an empty string, so introspection cannot give the parameter shape (Q1 narrowed; Q2 to Q5 open) |
+| `AlarmRegion.getArmMode` | Works with any params, ignores them, and returns all rows: `{"armMode": [{"Mode": "D"}, ...]}` (a live read of the same table as `AreaArmMode`) |
+| `getZoneArmMode`, `getUserArmModeAuth` | Error `-267976701` for every shape tried, including `{}` |
+| Arm from DMSS with open zones (seen twice) | `GlobalArmingFailure` plus one `ArmingFailure` per area (`Mode: p1`, `Profile: Auto`, `Abnormal` lists the open zones); about 2 s later, after the user confirmed in DMSS, `GlobalAreaArmModeChange` plus one `AreaArmModeChange` per area with `Mode: p1`, **`Profile: Force`** and the `Abnormal` list retained; then a disarm: `Mode: D`, `Profile: Auto` |
+| Origin fields (Q8) | DMSS events carry `TriggerMode: Remote`, a constant `Name`, `OperatorInfo`, and `NetClientAddr: 127.0.0.1` (consistent with the cloud relay; inference) |
+
+What this answers: Q6 (a refusal arrives as an event), Q7 (a force option exists
+and shows up as `Profile: Force`; DMSS asks first, then re-sends as forced) and
+Q8 for DMSS. Still open: the request itself, whether the reply also carries a
+refusal, and Q9 (no separate exit-delay event code appeared for the Home arm).
+Because DMSS reaches the ARC through the relay, a LAN capture of DMSS will not
+show the request.
+
 ## 3. Candidate methods (hypotheses, unverified)
 
 These come from Dahua NetSDK naming and the RPC services the hub already

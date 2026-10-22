@@ -54,6 +54,7 @@ def main() -> None:
             assert all("__pycache__" not in name for name in names)
             assert all("bootstrap" not in name for name in names)
             assert all("capture" not in name for name in names)
+            assert all("arm_probe" not in name for name in names)
             assert all(
                 name.startswith("custom_components/dahua_arc/")
                 or name in {"README.md", "LICENSE", "SECURITY.md"}

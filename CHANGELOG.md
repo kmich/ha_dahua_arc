@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/arm_probe.py`: a standalone, never-shipped script for supervised single-call arm/disarm trials against a real ARC (developer tool; not part of the integration).
+
 ## [0.4.3] - 2026-10-21
 
 ### Added
