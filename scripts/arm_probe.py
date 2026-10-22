@@ -12,6 +12,17 @@ house informed. It sends exactly one RPC per run: no loops, no retries.
 ``--list-shapes`` prints the built-in disarm-only guesses; ``--params-json``
 sends custom parameters instead (mind your shell's quoting).
 
+Alarm-user code. The ARC's alarm users each have a code, and the arm request may
+need one. ``--prompt-code`` asks for it with no echo and uses it only for the
+shapes that carry it (``areas-password`` ...) or a ``__CODE__`` value in
+``--params-json``. It is never read from the command line, a file, the
+environment or a pipe, and it is replaced by ``**CODE**`` in everything printed
+and in the transcript:
+
+    py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
+        --shape areas-usernumber --user-number 1 --prompt-code \\
+        --i-am-at-the-panel --out trial9.json
+
 What a run does:
 
 1. logs in, reads ``AreaArmMode`` (before);
@@ -84,6 +95,39 @@ SHAPES: dict[str, Callable[[int], dict[str, Any]]] = {
     "areas-objects": lambda a: {"Areas": [{"Index": a, "Mode": DISARMED}]},
     "armmode-objects": lambda a: {"armMode": [{"Index": a, "Mode": DISARMED}]},
 }
+# The alarm users on the ARC have a Password (the arming code) and a UserNumber,
+# so the arm call may need them. These guesses carry the code; ``code`` is the real
+# code when sending and CODE_PLACEHOLDER everywhere it could be shown or stored.
+CODE_PLACEHOLDER = "**CODE**"
+CODE_TOKEN = "__CODE__"  # noqa: S105  (a placeholder in --params-json, not a secret)
+CODE_SHAPES: dict[str, Callable[[int, str, int], dict[str, Any]]] = {
+    "areas-password": lambda a, c, n: {"Mode": DISARMED, "Areas": [a], "Password": c},
+    "areas-usernumber": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Areas": [a],
+        "UserNumber": n,
+        "Password": c,
+    },
+    "areas-userid": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Areas": [a],
+        "UserID": n,
+        "Password": c,
+    },
+    "areas-user-object": lambda a, c, n: {
+        "Mode": DISARMED,
+        "Areas": [a],
+        "User": {"UserNumber": n, "Password": c},
+    },
+    "areas-objects-password": lambda a, c, n: {
+        "Areas": [{"Index": a, "Mode": DISARMED}],
+        "Password": c,
+    },
+    "armmode-objects-password": lambda a, c, n: {
+        "armMode": [{"Index": a, "Mode": DISARMED}],
+        "Password": c,
+    },
+}
 DEFAULT_METHOD = "AlarmRegion.setArmMode"
 EVENT_HINTS = ("arm", "alarm", "defence", "defense", "region")
 REDACT_KEYS = {
@@ -117,6 +161,22 @@ def string_leaves(value: Any) -> list[str]:
     if isinstance(value, list):
         return [s for v in value for s in string_leaves(v)]
     return []
+
+
+def substitute(value: Any, token: str, replacement: str) -> Any:
+    """Replace every string equal to ``token`` with ``replacement``."""
+    if isinstance(value, str):
+        return replacement if value == token else value
+    if isinstance(value, dict):
+        return {k: substitute(v, token, replacement) for k, v in value.items()}
+    if isinstance(value, list):
+        return [substitute(v, token, replacement) for v in value]
+    return value
+
+
+def scrub(text: str, code: str) -> str:
+    """Hide the code wherever it could be printed or written to disk."""
+    return text.replace(code, CODE_PLACEHOLDER) if code else text
 
 
 def redact(value: Any) -> Any:
@@ -220,16 +280,32 @@ def run(
     *,
     emit: Callable[[str], None] = print,
     ask: Callable[[str], str] = input,
+    ask_code: Callable[[str], str] = getpass.getpass,
     factory=DHIPTransport,
 ) -> dict[str, Any]:
     check_method(args.method)
-    if args.shape:
-        params = SHAPES[args.shape](args.area)
-    else:
+    code = ""
+    if args.prompt_code:
+        code = ask_code("Alarm-user code (hidden; never printed or stored): ").strip()
+        if not code:
+            raise GuardError("no code entered; nothing was sent")
+
+    def say(message: str) -> None:
+        emit(scrub(message, code))
+
+    def build(use: str) -> Any:
+        """The params with ``use`` standing in for the code."""
+        if args.shape in CODE_SHAPES:
+            return CODE_SHAPES[args.shape](args.area, use, args.user_number)
+        if args.shape:
+            return SHAPES[args.shape](args.area)
         try:
-            params = json.loads(args.params_json)
+            return substitute(json.loads(args.params_json), CODE_TOKEN, use)
         except json.JSONDecodeError as exc:
             raise GuardError(f"--params-json is not valid JSON: {exc}") from exc
+
+    params = build(code or CODE_PLACEHOLDER)
+    shown = build(CODE_PLACEHOLDER)  # what may be printed and stored
 
     control = factory(args.host, args.port, timeout=12)
     events = None
@@ -237,7 +313,7 @@ def run(
         "started": now(),
         "host_redacted": True,
         "method": args.method,
-        "params": redact(params),
+        "params": redact(shown),
         "allow_arm": args.allow_arm,
     }
     try:
@@ -245,11 +321,11 @@ def run(
         control.login(args.user, password)
         before = read_modes(control)
         transcript["modes_before"] = before
-        emit(f"AreaArmMode before: {before}")
+        say(f"AreaArmMode before: {before}")
         if not args.allow_arm:
-            check_disarm_only(params, before)
-        request = {"method": args.method, "params": params}
-        emit("About to send exactly ONE request:\n" + json.dumps(request, indent=2))
+            check_disarm_only(shown, before)
+        request = {"method": args.method, "params": shown}
+        say("About to send exactly ONE request:\n" + json.dumps(request, indent=2))
         if not args.yes and ask("Type SEND to continue: ").strip() != "SEND":
             raise GuardError("not confirmed; nothing was sent")
 
@@ -258,17 +334,18 @@ def run(
         try:
             reply = control.call(args.method, params, fragmented=True)
             transcript["reply"] = redact(reply)
-            emit("Reply: " + json.dumps(redact(reply)))
+            say("Reply: " + json.dumps(redact(reply)))
         except Exception as exc:  # report, never retry
             transcript["send_error"] = f"{type(exc).__name__}: {exc}"
-            emit(f"Send failed ({transcript['send_error']}); NOT retrying.")
-        emit(f"Listening for events for {args.listen:.0f}s ...")
-        transcript["events"] = [redact(e) for e in listen(events, args.listen, emit)]
+            say(f"Send failed ({transcript['send_error']}); NOT retrying.")
+        say(f"Listening for events for {args.listen:.0f}s ...")
+        transcript["events"] = [redact(e) for e in listen(events, args.listen, say)]
         after = read_modes(control)
         transcript["modes_after"] = after
         transcript["modes_changed"] = after != before
-        emit(f"AreaArmMode after: {after} (changed: {after != before})")
-        return transcript
+        say(f"AreaArmMode after: {after} (changed: {after != before})")
+        # Last line of defence: the code never reaches a transcript.
+        return json.loads(scrub(json.dumps(transcript), code))
     finally:
         for transport in (events, control):
             if transport is not None:
@@ -279,7 +356,10 @@ def run(
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     if "--list-shapes" in (sys.argv[1:] if argv is None else argv):
         for name, build in SHAPES.items():
-            print(f"{name:16} {json.dumps(build(0))}")
+            print(f"{name:24} {json.dumps(build(0))}")
+        for name, build_code in CODE_SHAPES.items():
+            print(f"{name:24} {json.dumps(build_code(0, CODE_PLACEHOLDER, 1))}")
+        print("(shapes with a code need --prompt-code)")
         raise SystemExit(0)
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -292,11 +372,24 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     params.add_argument("--params-json", help="request params as JSON")
     params.add_argument(
         "--shape",
-        choices=sorted(SHAPES),
+        choices=sorted({*SHAPES, *CODE_SHAPES}),
         help="a built-in disarm-only guess (see --list-shapes); no quoting needed",
     )
     parser.add_argument(
         "--area", type=int, default=0, help="zero-based area for --shape (default 0)"
+    )
+    parser.add_argument(
+        "--prompt-code",
+        action="store_true",
+        help="ask for an alarm-user code without echo; it is never printed, logged "
+        "or stored (needed by the *-password / *-user* shapes, or by a "
+        f"{CODE_TOKEN} value in --params-json)",
+    )
+    parser.add_argument(
+        "--user-number",
+        type=int,
+        default=1,
+        help="UserNumber of the alarm user for shapes that include it (default 1)",
     )
     parser.add_argument(
         "--i-am-at-the-panel",
@@ -314,11 +407,22 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not args.i_am_at_the_panel:
         parser.error("refusing to run without --i-am-at-the-panel")
+    if args.shape in CODE_SHAPES and not args.prompt_code:
+        parser.error(f"shape {args.shape!r} carries a code: add --prompt-code")
+    if args.prompt_code and not (
+        args.shape in CODE_SHAPES or CODE_TOKEN in (args.params_json or "")
+    ):
+        parser.error(
+            f"--prompt-code needs a code shape or {CODE_TOKEN} in --params-json"
+        )
     return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.prompt_code and not sys.stdin.isatty():
+        print("--prompt-code needs a terminal: the code is never read from a pipe.")
+        return 2
     password = os.environ.get("ARC_PASSWORD") or (
         getpass.getpass("ARC password: ") if sys.stdin.isatty() else ""
     )
