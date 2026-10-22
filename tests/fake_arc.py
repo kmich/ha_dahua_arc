@@ -179,6 +179,9 @@ class FakeArc:
         # clientTypes allowed to call a getter (others get -267976701).
         self.login_client_types: set[str] | None = None
         self.getter_client_types: dict[str, set[str]] = {}
+        # method -> callable(params) returning an error code to answer with
+        # (None: fall through to the normal handlers).
+        self.getter_errors: dict[str, Callable[[Any], int | None]] = {}
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -409,6 +412,10 @@ class FakeArc:
             if value is not None:
                 return {"result": True, "params": {"signature": value}}, 1
             return {"result": False, "error": {"code": 268959743}}, 1
+        if method in self.getter_errors:
+            code = self.getter_errors[method](params)
+            if code is not None:
+                return {"result": False, "error": {"code": code}}, 1
         if method in self.getters:
             allowed = self.getter_client_types.get(method)
             if allowed is not None and sock.client_type not in allowed:
