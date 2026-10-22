@@ -198,6 +198,7 @@ class FakeArc:
         # ArmingFailure events and the modes stay unchanged.
         self.open_zones: list[dict[str, Any]] = []
         self.arm_requests: list[dict[str, Any]] = []
+        self.keyfob_presses: list[str] = []
         self.event_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._timers: list[threading.Timer] = []
 
@@ -309,6 +310,14 @@ class FakeArc:
                     "data": {"Abnormal": self._abnormal(areas)},
                 },
             }, 1
+        self._apply_arm(mode, areas)
+        if self.arm_reply == "no_reply":
+            return None, 0
+        return {"result": True}, 1
+
+    def _apply_arm(self, mode: str, areas: list[int]) -> bool:
+        """Apply an arm like the ARC does; returns True when it was refused."""
+        refuse = bool(self.open_zones) and mode != "D"
         if self.arm_takes_effect and not refuse:
             rows = self.config_tables["AreaArmMode"]["Areas"]
             for index in areas:
@@ -323,9 +332,14 @@ class FakeArc:
             timer.daemon = True
             self._timers.append(timer)
             timer.start()
-        if self.arm_reply == "no_reply":
-            return None, 0
-        return {"result": True}, 1
+        return refuse
+
+    def keyfob_press(self, mode: str, areas: list[int] | None = None) -> None:
+        """A paired keyfob arms or disarms: the same events, no RPC at all."""
+        self.keyfob_presses.append(mode)
+        self._apply_arm(
+            mode, list(range(len(self.area_modes()))) if areas is None else areas
+        )
 
     def close_timers(self) -> None:
         for timer in self._timers:
