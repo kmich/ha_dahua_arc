@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Changed
+
+- `scripts/arm_probe.py` (developer tool, not shipped): `--prompt-code` asks for an alarm-user code without echo for code-bearing disarm-only shapes; the code is never printed, logged or stored.
+
 ## [0.4.5] - 2026-10-22
 
 ### Added
