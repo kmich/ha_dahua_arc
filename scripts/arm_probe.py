@@ -36,6 +36,15 @@ traffic and can cut Home Assistant off from the ARC:
     py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
         --probe-client-types --out client_types.json
 
+Key sweep. ``--sweep-keys`` is another read-only mode: on one ``Web3.0`` session
+it calls ``AlarmRegion.getZoneArmMode`` and ``getUserArmModeAuth`` with each of
+about 50 candidate parameter key names (values ``0`` and ``[0]``), and reports the
+keys whose error differs from the baseline: those are names the ARC recognises.
+It stops at once on any transport error; ``--sweep-delay`` spaces the calls:
+
+    py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
+        --sweep-keys --out sweep.json
+
 What a run does:
 
 1. logs in, reads ``AreaArmMode`` (before);
@@ -157,6 +166,60 @@ CLIENT_TYPE_GETTERS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("AlarmRegion.getUserArmModeAuth", {}),
     ("AlarmRegion.getUserArmModeAuth", {"UserID": 0}),
 )
+# --sweep-keys: which parameter key names does the ARC recognise? The generic
+# error for an unknown/missing key differs from the error once a key is parsed
+# (getZoneArmMode {"Zones": [0]} gives 268632080, not -267976701), so a changed
+# outcome marks a recognised key. Read-only getters only, one Web3.0 session.
+SWEEP_METHODS = ("AlarmRegion.getZoneArmMode", "AlarmRegion.getUserArmModeAuth")
+SWEEP_KEYS = [
+    "Areas",
+    "Area",
+    "AreaID",
+    "AreaId",
+    "AreaIndex",
+    "AreaNo",
+    "Index",
+    "Indexes",
+    "Id",
+    "ID",
+    "Number",
+    "No",
+    "Zones",
+    "Zone",
+    "ZoneID",
+    "ZoneId",
+    "ZoneIndex",
+    "ZoneNo",
+    "Channel",
+    "Channels",
+    "Slot",
+    "Region",
+    "Regions",
+    "SubSystem",
+    "SubSystems",
+    "SubSystemID",
+    "Group",
+    "Device",
+    "Module",
+    "Address",
+    "UserID",
+    "UserId",
+    "UserIndex",
+    "UserNumber",
+    "User",
+    "Users",
+    "UserName",
+    "Name",
+    "Mode",
+    "ArmMode",
+    "Type",
+    "Profile",
+    "Status",
+    "Condition",
+    "Password",
+    "Auth",
+]
+SWEEP_VALUES: tuple[Any, ...] = (0, [0])
 # Login failures that may count towards an account lockout: stop at once.
 LOCKOUT_RISK_CODES = {268632080, 268632081, 268632082}
 EVENT_HINTS = ("arm", "alarm", "defence", "defense", "region")
@@ -457,6 +520,71 @@ def probe_client_types(
     return results
 
 
+def _outcome(reply: dict[str, Any]) -> dict[str, Any]:
+    ok = bool(reply.get("result"))
+    params = reply.get("params")
+    return {
+        "ok": ok,
+        "code": None if ok else (reply.get("error") or {}).get("code"),
+        "reply_keys": sorted(params) if ok and isinstance(params, dict) else [],
+    }
+
+
+def sweep_keys(
+    args: argparse.Namespace,
+    password: str,
+    *,
+    emit: Callable[[str], None] = print,
+    factory=DHIPTransport,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Find parameter key names the ARC recognises, using read-only getters.
+
+    One Web3.0 session; for each method the baseline outcome of ``{}`` is
+    recorded, then each candidate key is sent with a few simple values. A key
+    whose outcome differs from the baseline is reported as recognised. Any
+    transport error stops the whole sweep at once (it may mean a block).
+    """
+    for method in SWEEP_METHODS:
+        check_method(method)
+        if not method.rpartition(".")[2].startswith("get"):
+            raise GuardError(f"{method} is not a getter")
+    result: dict[str, Any] = {"started": now(), "methods": {}, "aborted": None}
+    transport = factory(args.host, args.port, timeout=12)
+    try:
+        transport.connect()
+        transport.login(args.user, password, DEFAULT_CLIENT_TYPE)
+        emit(f"{DEFAULT_CLIENT_TYPE} login ok; sweeping {len(SWEEP_KEYS)} keys")
+        for method in SWEEP_METHODS:
+            entry: dict[str, Any] = {"baseline": None, "calls": [], "recognised": []}
+            result["methods"][method] = entry
+            entry["baseline"] = _outcome(transport.call(method, {}, fragmented=True))
+            emit(f"{method} {{}} -> {entry['baseline']['code']}")
+            for key in SWEEP_KEYS:
+                for value in SWEEP_VALUES:
+                    sleep(args.sweep_delay)
+                    outcome = _outcome(
+                        transport.call(method, {key: value}, fragmented=True)
+                    )
+                    call = {"key": key, "value": value, "outcome": outcome}
+                    entry["calls"].append(call)
+                    if (outcome["ok"], outcome["code"]) != (
+                        entry["baseline"]["ok"],
+                        entry["baseline"]["code"],
+                    ):
+                        entry["recognised"].append(call)
+                        shown = outcome["code"] if not outcome["ok"] else "OK"
+                        emit(f"    recognised: {{{key!r}: {value}}} -> {shown}")
+            emit(f"{method}: {len(entry['recognised'])} recognised key shape(s)")
+    except (DHIPError, OSError) as exc:
+        result["aborted"] = f"{type(exc).__name__}: {exc}"
+        emit(f"Stopped: {result['aborted']} (check the network IPS before retrying)")
+    finally:
+        with contextlib.suppress(Exception):
+            transport.close()
+    return result
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     if "--list-shapes" in (sys.argv[1:] if argv is None else argv):
         for name, build in SHAPES.items():
@@ -492,6 +620,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="read-only: log in under each client type and call the failing "
         "getters once each; nothing is armed or changed",
+    )
+    parser.add_argument(
+        "--sweep-keys",
+        action="store_true",
+        help="read-only: find which parameter key names the ARC recognises by "
+        "calling two getters with candidate keys (one Web3.0 session)",
+    )
+    parser.add_argument(
+        "--sweep-delay",
+        type=float,
+        default=0.2,
+        help="seconds between --sweep-keys calls (default 0.2)",
     )
     parser.add_argument(
         "--client-types",
@@ -531,9 +671,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             check_client_type(name)
         except GuardError as exc:
             parser.error(str(exc))
-    if args.probe_client_types:
+    if args.probe_client_types and args.sweep_keys:
+        parser.error("use either --probe-client-types or --sweep-keys, not both")
+    if args.probe_client_types or args.sweep_keys:
         if args.shape or args.params_json or args.prompt_code:
-            parser.error("--probe-client-types takes no shape, params or code")
+            parser.error("the read-only probes take no shape, params or code")
         return args
     if not (args.shape or args.params_json):
         parser.error("one of --shape or --params-json is required")
@@ -562,7 +704,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Set ARC_PASSWORD (the password is never taken from the command line).")
         return 2
     try:
-        if args.probe_client_types:
+        if args.sweep_keys:
+            transcript = sweep_keys(args, password)
+        elif args.probe_client_types:
             transcript = {
                 "started": now(),
                 "results": probe_client_types(args, password),
