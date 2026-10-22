@@ -448,11 +448,11 @@ def _probe_args(probe: ModuleType, *extra: str):
 
 def _client_type_arc() -> FakeArc:
     arc = _arc()
-    arc.login_client_types = {"Web3.0", "NetKeyboard"}
+    arc.login_client_types = {"Web3.0", "Local"}
     arc.getters["AlarmRegion.getArmMode"] = lambda _p: {"armMode": [{"Mode": "D"}]}
     arc.getters["AlarmRegion.getZoneArmMode"] = lambda _p: {"Zones": [1]}
-    # Only a keyboard-type session may call it; others get the generic error.
-    arc.getter_client_types["AlarmRegion.getZoneArmMode"] = {"NetKeyboard"}
+    # Only a Local session may call it; others get the generic error.
+    arc.getter_client_types["AlarmRegion.getZoneArmMode"] = {"Local"}
     return arc
 
 
@@ -464,7 +464,6 @@ def test_client_type_probe_shows_which_type_the_arc_accepts(probe) -> None:
         results = probe.probe_client_types(args, PASSWORD, emit=lines.append)
     by_type = {r["client_type"]: r for r in results}
     assert list(by_type) == list(probe.CLIENT_TYPES)
-    assert by_type["Local"]["login"] == "failed (code 268894211)"
 
     def outcome(entry, method, params):
         (call,) = [
@@ -478,13 +477,13 @@ def test_client_type_probe_shows_which_type_the_arc_accepts(probe) -> None:
     zone = outcome(web, "AlarmRegion.getZoneArmMode", {})
     assert zone["ok"] is False
     assert zone["error_code"] == -267976701
-    keyboard = by_type["NetKeyboard"]
-    zone_kb = outcome(keyboard, "AlarmRegion.getZoneArmMode", {})
-    assert zone_kb["ok"] is True
-    assert zone_kb["reply_keys"] == ["Zones"]
+    local = by_type["Local"]
+    zone_local = outcome(local, "AlarmRegion.getZoneArmMode", {})
+    assert zone_local["ok"] is True
+    assert zone_local["reply_keys"] == ["Zones"]
     # Only key names are kept: no reply value is stored.
     assert "[1]" not in json.dumps(results)
-    assert any("NetKeyboard" in line and "login ok" in line for line in lines)
+    assert any("Local" in line and "login ok" in line for line in lines)
 
 
 def test_client_type_probe_is_read_only(probe) -> None:
@@ -511,19 +510,19 @@ def test_client_type_probe_stops_on_a_lockout_risk(probe) -> None:
 
 def test_custom_client_types_are_used(probe) -> None:
     arc = _client_type_arc()
-    args = _probe_args(probe, "--client-types", "NetKeyboard, Web3.0")
+    args = _probe_args(probe, "--client-types", "Local, Web3.0")
     with arc.patch():
         results = probe.probe_client_types(args, PASSWORD, emit=lambda _m: None)
-    assert [r["client_type"] for r in results] == ["NetKeyboard", "Web3.0"]
+    assert [r["client_type"] for r in results] == ["Local", "Web3.0"]
 
 
 def test_client_type_option_is_used_for_the_trial_login(probe) -> None:
     arc = _arc()
-    arc.login_client_types = {"NetKeyboard"}
+    arc.login_client_types = {"Local"}
     with pytest.raises(probe.LoginError), arc.patch():
         probe.run(_args(probe, {"Mode": "D", "Areas": [0]}), PASSWORD, emit=print)
     transcript, _ = _run(
-        probe, arc, {"Mode": "D", "Areas": [0]}, "--client-type", "NetKeyboard"
+        probe, arc, {"Mode": "D", "Areas": [0]}, "--client-type", "Local"
     )
     assert transcript["reply"]["result"] is True
     assert len(arc.arm_requests) == 1
@@ -560,9 +559,38 @@ def test_main_runs_the_client_type_probe_and_writes_a_transcript(
     written = json.loads(out.read_text(encoding="utf-8"))
     assert [r["client_type"] for r in written["results"]] == list(probe.CLIENT_TYPES)
     assert PASSWORD not in out.read_text(encoding="utf-8")
-    assert "NetKeyboard" in capsys.readouterr().out
+    assert "Local" in capsys.readouterr().out
 
 
 def test_every_client_type_probe_call_is_a_getter(probe) -> None:
     for method, _params in probe.CLIENT_TYPE_GETTERS:
         assert method.rsplit(".", 1)[-1].startswith("get"), method
+
+
+def test_default_client_types_are_the_two_safe_ones(probe) -> None:
+    assert probe.CLIENT_TYPES == ("Web3.0", "Local")
+
+
+@pytest.mark.parametrize(
+    "name", ["NetKeyboard", "netkeyboard", "Dahua3.0", "Dahua3.0-Web3.0"]
+)
+def test_exploit_flagged_client_types_are_refused(probe, name) -> None:
+    arc = _client_type_arc()
+    with pytest.raises(probe.GuardError, match="IPS"):
+        probe.check_client_type(name)
+    # Refused by the argument parser, for both options ...
+    with pytest.raises(SystemExit):
+        _probe_args(probe, "--client-types", f"Web3.0,{name}")
+    with pytest.raises(SystemExit):
+        _code_args(probe, "--shape", "areas-mode", "--client-type", name)
+    # ... and by the probe itself, before any connection is made.
+    args = _probe_args(probe)
+    args.client_types = [name]
+    with pytest.raises(probe.GuardError), arc.patch():
+        probe.probe_client_types(args, PASSWORD, emit=lambda _m: None)
+    assert arc.calls == []
+
+
+def test_ordinary_client_types_are_accepted(probe) -> None:
+    for name in ("Web3.0", "Local", "web3.0"):
+        probe.check_client_type(name)
