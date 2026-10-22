@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Internal groundwork for arming through a paired keyfob driven by relay entities (design in `docs/arm-control/06-keyfob-relay.md`): the arm controller can issue a command through a sender instead of an RPC, and a new `KeyfobSender` presses one of three mapped buttons (Home, Away, Disarm; never SOS) once, never retrying, with the result confirmed from the ARC's events. Nothing in Home Assistant uses it yet, so there is no behaviour change.
+
 ### Documentation
 
 - Design note `docs/arm-control/06-keyfob-relay.md`: arming and disarming the ARC from Home Assistant by pressing a spare paired keyfob through relay-driven button entities, with confirmation from the ARC's own events. Design only; nothing is implemented yet.

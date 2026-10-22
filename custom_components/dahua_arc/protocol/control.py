@@ -11,6 +11,11 @@ system, and a repeated disarm or arm would not be safe. The outcome comes from
 the ARC's ``AreaArmModeChange`` / ``ArmingFailure`` events, falling back to one
 read of the ``AreaArmMode`` table.
 
+A command can also be issued by a :class:`CommandSender` instead of an RPC (for
+example a relay pressing a paired keyfob, see ``protocol/keyfob.py``). The
+confirmation from the ARC's events is identical, and a sender is never retried
+either.
+
 The RPC itself is described by a :class:`CommandSpec`. The real spec,
 :data:`ARM_COMMAND_SPEC`, stays ``None`` until its method name and parameter
 shape are verified on hardware (see ``docs/arm-control/02-protocol.md``).
@@ -26,7 +31,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 from ..vendor.dahua import DHIPTransport, const
 from ..vendor.dahua.exceptions import LoginError
@@ -117,6 +122,32 @@ class CommandSpec:
     parse_reply: Callable[[dict[str, Any]], ReplyResult]
 
 
+@dataclass(frozen=True, slots=True)
+class SendFailure:
+    """A :class:`CommandSender` could not issue (or may not have issued) a command.
+
+    ``issued`` is True when the command may already have taken effect, so the
+    result is ``FAILED`` and the command is never repeated; False means nothing
+    was done and the result is ``REJECTED``.
+    """
+
+    reason: str
+    message: str | None = None
+    issued: bool = False
+
+
+class CommandSender(Protocol):
+    """Issues one command by some means other than a DHIP RPC. Never retries."""
+
+    name: str
+
+    def send(self, command: ArmCommand) -> SendFailure | None:
+        """Issue ``command``: ``None`` when issued, else why it was not."""
+
+    def describe(self) -> dict[str, Any]:
+        """Redacted facts for diagnostics."""
+
+
 def error_fields(reply: dict[str, Any]) -> tuple[int | None, str | None]:
     error = reply.get("error")
     if not isinstance(error, dict):
@@ -185,7 +216,6 @@ class ArmController:
         port: int,
         username: str,
         password: str,
-        spec: CommandSpec,
         tracker: ArmingTracker,
         read_table: Callable[[], Any],
         hub_available: Callable[[], bool],
@@ -196,10 +226,15 @@ class ArmController:
         wait_timeout: float = WAIT_TIMEOUT_SECONDS,
         reply_timeout: float = REPLY_TIMEOUT_SECONDS,
         allow_fake_spec: bool = False,
+        spec: CommandSpec | None = None,
+        sender: CommandSender | None = None,
     ) -> None:
+        if (spec is None) == (sender is None):
+            raise ValueError("Give the controller exactly one of spec or sender")
         if spec is FAKE_COMMAND_SPEC and not allow_fake_spec:
             raise ValueError("The fake arm command spec is for tests only")
         self.spec = spec
+        self.sender = sender
         self.tracker = tracker
         self.wait_timeout = wait_timeout
         self.reply_timeout = reply_timeout
@@ -251,7 +286,8 @@ class ArmController:
 
     def diagnostics(self) -> dict[str, Any]:
         return {
-            "command_spec": self.spec.method,
+            "command_spec": self.spec.method if self.spec else None,
+            "sender": self.sender.describe() if self.sender else None,
             "in_flight": self.in_flight,
             "history": self.history(),
         }
@@ -326,6 +362,8 @@ class ArmController:
             return reject("unavailable")
 
         mark = self.tracker.outcome_mark()
+        if self.sender is not None:
+            return self._issue_with_sender(self.sender, command, started, mark)
         reply = self._send(command, started)
         if isinstance(reply, CommandResult):
             return reply
@@ -342,6 +380,30 @@ class ArmController:
                 code=parsed.error_code,
                 message=parsed.error_message,
                 open_zones=list(parsed.open_zones),
+            )
+        return self._confirm(command, started, mark)
+
+    def _issue_with_sender(
+        self,
+        sender: CommandSender,
+        command: ArmCommand,
+        started: str,
+        mark: OutcomeMark,
+    ) -> CommandResult:
+        """Issue the one command through the sender, then confirm from events."""
+        try:
+            failure = sender.send(command)
+        except Exception as exc:
+            # The command may have been issued before the error: never repeat.
+            failure = SendFailure(
+                "press_failed", f"{type(exc).__name__}: {exc}", issued=True
+            )
+        if failure is not None:
+            outcome = (
+                CommandOutcome.FAILED if failure.issued else CommandOutcome.REJECTED
+            )
+            return self._result(
+                outcome, command, started, failure.reason, message=failure.message
             )
         return self._confirm(command, started, mark)
 
