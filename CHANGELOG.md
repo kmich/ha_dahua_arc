@@ -6,6 +6,8 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-22
+
 ### Added
 
 - Diagnostics now include the structure of `AlarmUserManager.getUserInfoAll` (`arm_state_probe.user_info_structure`): only key names, value types and counts, to see which fields an ARC user has. Every value is dropped, so no user names, codes or passwords are recorded.
@@ -124,7 +126,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.1...v0.4.2
