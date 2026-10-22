@@ -123,7 +123,8 @@ class KeyfobSender:
 - Maps `p1`, `T`, `D` to the configured entity. A mode with no configured entity
   fails with `mode_not_configured`; `p2` is unsupported.
 - `is_ready(entity_id)` (injected) reports whether the relay entity exists and is
-  not `unavailable`/`unknown`. If not, the send fails with `relay_unavailable`
+  not `unavailable` (`unknown` is normal for a button that was never pressed, so
+  it counts as ready). If not ready, the send fails with `relay_unavailable`
   **before** anything is pressed.
 - Enforces `min_gap` between presses (`too_soon`).
 - Calls `press(entity_id)`: a blocking callable supplied by the integration. A
