@@ -140,12 +140,31 @@
           "code_disarm_required": "Require the code to disarm",
           "code_arm_required": "Require the code to arm",
           "arm_modes": "Arm modes offered",
-          "acknowledge_control": "I understand that Home Assistant can now disarm my alarm"
+          "acknowledge_control": "I understand that Home Assistant can now disarm my alarm",
+          "arm_backend": "How commands are sent"
         },
         "data_description": {
           "arm_code": "4 to 8 digits. Leave empty to keep the current code. This is a Home Assistant code, not an ARC user PIN.",
           "clear_arm_code": "Removes the stored code.",
-          "arm_modes": "Which arm actions Home Assistant offers."
+          "arm_modes": "Which arm actions Home Assistant offers.",
+          "arm_backend": "Keyfob: a spare keyfob paired to the ARC, with its Home, Away and Disarm buttons pressed by relays that Home Assistant controls. The ARC's own arm command is not available on this firmware."
+        }
+      },
+      "arm_keyfob": {
+        "title": "Keyfob relay buttons",
+        "description": "Choose the Home Assistant entities that press the buttons of the spare keyfob (a button, switch or script wired to it by a relay). Home Assistant presses one button per command and never presses again on its own. There is no option for the SOS button. Leave an entity empty for a mode you do not want to offer.",
+        "data": {
+          "keyfob_home_entity": "Home button entity",
+          "keyfob_away_entity": "Away button entity",
+          "keyfob_disarm_entity": "Disarm button entity",
+          "keyfob_allow_disarm": "Allow Home Assistant to disarm through the keyfob",
+          "keyfob_press_ms": "Press length for switches (milliseconds)",
+          "keyfob_wait_seconds": "Seconds to wait for the ARC to confirm"
+        },
+        "data_description": {
+          "keyfob_allow_disarm": "Off by default. Anything that can run Home Assistant actions could then disarm your alarm, so keep a code set.",
+          "keyfob_press_ms": "Only used for switch entities, which are turned on, held and turned off. Buttons and scripts press once.",
+          "keyfob_wait_seconds": "The command fails as unconfirmed if the ARC reports no change in this time. It is never pressed again automatically."
         }
       }
     },
@@ -153,7 +172,9 @@
       "no_areas": "No Home Assistant areas exist yet. Create at least one area or disable smart area matching.",
       "acknowledge_required": "Confirm that you understand Home Assistant will be able to disarm the alarm.",
       "invalid_code_format": "The code must be 4 to 8 digits.",
-      "no_arm_modes": "Choose at least one arm mode."
+      "no_arm_modes": "Choose at least one arm mode.",
+      "keyfob_entity_required": "Choose the entity that presses this button, or remove the mode on the previous screen.",
+      "keyfob_disarm_entity_required": "Choose the entity that presses Disarm, or turn the disarm option off."
     }
   },
   "issues": {
@@ -200,6 +221,10 @@
     "arm_control_unsupported": {
       "title": "Arm control is not yet supported on this firmware",
       "description": "Arm control is turned on, but this version of the integration has no verified arm command for the ARC, so it does not create alarm panels and never sends an arm or disarm command. Turn the option off, or wait for a release that supports your firmware."
+    },
+    "keyfob_entity_missing": {
+      "title": "A keyfob relay entity is missing",
+      "description": "These entities, chosen to press the keyfob's buttons, no longer exist: {entities}. The matching arm or disarm commands will fail until you choose other entities in the integration's options."
     }
   },
   "entity": {
@@ -361,6 +386,12 @@
         "armed_home": "Home",
         "armed_away": "Away"
       }
+    },
+    "arm_backend": {
+      "options": {
+        "dhip": "ARC command (not available on this firmware yet)",
+        "keyfob": "Paired keyfob pressed by relays"
+      }
     }
   },
   "exceptions": {
@@ -399,6 +430,24 @@
     },
     "arm_failed": {
       "message": "The ARC rejected the command (error {code}: {message})."
+    },
+    "arm_relay_unavailable": {
+      "message": "The relay entity {entity} is unavailable, so nothing was pressed. Check the relay device."
+    },
+    "arm_too_soon": {
+      "message": "The keyfob was pressed less than {wait} ago, so nothing was pressed. Wait a moment and try again."
+    },
+    "arm_mode_not_configured": {
+      "message": "No relay entity is set for this mode, so nothing was pressed. Add it in the integration's options."
+    },
+    "arm_press_failed": {
+      "message": "Pressing the keyfob failed ({error}). It may still have been pressed, so check the panel before trying again."
+    },
+    "arm_unconfirmed_keyfob": {
+      "message": "The keyfob was pressed but the ARC did not confirm a change within {seconds} seconds. It may still have worked and it was not pressed again. Check the panel before trying again."
+    },
+    "disarm_not_enabled": {
+      "message": "Disarming through the keyfob is turned off. Enable it in the integration's options if you want Home Assistant to disarm."
     }
   }
 }

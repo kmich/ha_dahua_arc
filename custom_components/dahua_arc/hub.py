@@ -38,6 +38,7 @@ from .protocol.inventory import (
     summarize_alarm_records,
     summarize_rpc_inventory,
 )
+from .protocol.keyfob import KeyfobSender
 from .protocol.models import Zone
 from .protocol.realtime import RealtimeClient
 from .protocol.snapshot import SnapshotClient
@@ -115,6 +116,11 @@ class ArcHub:
         self.allow_fake_arm_spec = False
         self.arm_control_unsupported = False
         self.arm_stop = threading.Event()
+        # Arming through a relay-driven keyfob instead of an RPC: set by the
+        # Home Assistant adapter (see configure_keyfob).
+        self.keyfob_sender: KeyfobSender | None = None
+        self.keyfob_wait_seconds = 15.0
+        self.keyfob_allow_disarm = False
 
     # -- listeners ---------------------------------------------------------
 
@@ -180,11 +186,45 @@ class ArcHub:
 
     # -- arm/disarm control ------------------------------------------------
 
+    def configure_keyfob(
+        self,
+        sender: KeyfobSender | None,
+        *,
+        wait_seconds: float = 15.0,
+        allow_disarm: bool = False,
+    ) -> None:
+        """Use (or stop using) a keyfob sender for arm control.
+
+        Called by the Home Assistant adapter before ``start``. If the hub is
+        already running its controller is rebuilt straight away.
+        """
+        self.keyfob_sender = sender
+        self.keyfob_wait_seconds = wait_seconds
+        self.keyfob_allow_disarm = allow_disarm
+        if self.arming is not None:
+            self.setup_arm_control()
+
     def setup_arm_control(self) -> None:
-        """Build the controller only when opted in and a real spec exists."""
+        """Build the controller only when opted in and a command path exists."""
         self.arm_control = None
         self.arm_control_unsupported = False
         if not self.enable_arm_control or self.arming is None:
+            return
+        if self.keyfob_sender is not None:
+            self.arm_control = ArmController(
+                host=self.host,
+                port=self.dhip_port,
+                username=self.username,
+                password=self.password,
+                sender=self.keyfob_sender,
+                tracker=self.arming,
+                read_table=self._read_arm_table,
+                hub_available=lambda: self.available,
+                auth_failed=lambda: self.auth_failed,
+                on_auth_failed=self._handle_auth_failure,
+                stop_event=self.arm_stop,
+                wait_timeout=self.keyfob_wait_seconds,
+            )
             return
         if self.arm_command_spec is None:
             self.arm_control_unsupported = True

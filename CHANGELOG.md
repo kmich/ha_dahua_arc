@@ -8,6 +8,7 @@ The project uses semantic versioning for release tags where practical.
 
 ### Added
 
+- Optional, experimental arming through a relay-driven keyfob (`docs/arm-control/06-keyfob-relay.md`). With arm control on, a new option **How commands are sent** can be set to a paired keyfob pressed by relays: choose the Home Assistant `button`, `switch` or `script` entities that press the keyfob's Home, Away and (opt-in) Disarm buttons. A whole-system alarm panel then arms through them, with the result confirmed from the ARC's events, one press per command and never a retry. Disarm is off by default, SOS cannot be mapped, an unavailable relay is never pressed, and a missing relay entity raises a repair. Not yet verified on hardware.
 - Internal groundwork for arming through a paired keyfob driven by relay entities (design in `docs/arm-control/06-keyfob-relay.md`): the arm controller can issue a command through a sender instead of an RPC, and a new `KeyfobSender` presses one of three mapped buttons (Home, Away, Disarm; never SOS) once, never retrying, with the result confirmed from the ARC's events. Nothing in Home Assistant uses it yet, so there is no behaviour change.
 
 ### Documentation
