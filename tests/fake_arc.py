@@ -292,7 +292,8 @@ class FakeArc:
 
     def _arm(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
         self.arm_requests.append(params)
-        mode, areas = params["Mode"], list(params["Areas"])
+        mode = params.get("Mode") or params["ArmMode"]
+        areas = list(params.get("Areas", params.get("Zones")))
         if self.arm_reply == "error":
             return {
                 "result": False,
