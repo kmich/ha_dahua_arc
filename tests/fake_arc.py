@@ -58,6 +58,7 @@ class FakeSocket:
         self._closed = False
         self._timeout: float | None = None
         self.attached = False
+        self.client_type = ""
 
     # -- socket API used by DHIPTransport --------------------------------
     def settimeout(self, value: float | None) -> None:
@@ -174,6 +175,10 @@ class FakeArc:
         # method -> callable(params) returning a reply payload, or None to
         # refuse the parameter shape.
         self.getters: dict[str, Callable[[Any], Any]] = {}
+        # Login clientType values this ARC accepts (None: any), and per-method
+        # clientTypes allowed to call a getter (others get -267976701).
+        self.login_client_types: set[str] | None = None
+        self.getter_client_types: dict[str, set[str]] = {}
         self.files: dict[str, bytes] = {}
         self.sockets: list[FakeSocket] = []
         self.silent = False  # stop answering keepalives (dead peer)
@@ -341,6 +346,15 @@ class FakeArc:
                         "encryption": "Default",
                     },
                 }, 1
+            if (
+                self.login_client_types is not None
+                and params.get("clientType") not in self.login_client_types
+            ):
+                return {
+                    "result": False,
+                    "error": {"code": 268894211, "message": "Request invalid param!"},
+                }, 1
+            sock.client_type = params.get("clientType", "")
             expected = login_digest(params["userName"], self.password, REALM, RANDOM)
             if params["password"] != expected:
                 return {
@@ -396,6 +410,9 @@ class FakeArc:
                 return {"result": True, "params": {"signature": value}}, 1
             return {"result": False, "error": {"code": 268959743}}, 1
         if method in self.getters:
+            allowed = self.getter_client_types.get(method)
+            if allowed is not None and sock.client_type not in allowed:
+                return {"result": False, "error": {"code": -267976701}}, 1
             reply = self.getters[method](params)
             if reply is not None:
                 return {"result": True, "params": reply}, 1
