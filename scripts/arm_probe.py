@@ -4,10 +4,13 @@ NOT part of the integration package (``scripts/check_package.py`` asserts it is
 never shipped). Run it only while standing at the panel, with everyone in the
 house informed. It sends exactly one RPC per run: no loops, no retries.
 
-    set ARC_PASSWORD=...        (never pass the password on the command line)
-    python scripts/arm_probe.py --host 192.168.4.20 --user admin \\
-        --method AlarmRegion.setArmMode --params-json '{"...": "..."}' \\
-        --i-am-at-the-panel
+    (needs Python 3.14, nothing else; the password is prompted for, or read from
+    the ARC_PASSWORD environment variable, and is never taken from the command line)
+    py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
+        --shape areas-mode --i-am-at-the-panel --out trial1.json
+
+``--list-shapes`` prints the built-in disarm-only guesses; ``--params-json``
+sends custom parameters instead (mind your shell's quoting).
 
 What a run does:
 
@@ -43,14 +46,13 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# Load the vendored DHIP client as the top-level package ``dahua``. Importing it
+# through ``custom_components.dahua_arc`` would run the integration's
+# ``__init__`` and need Home Assistant installed; this script must run on any
+# plain Python.
+sys.path.insert(0, str(ROOT / "custom_components" / "dahua_arc" / "vendor"))
 
-from custom_components.dahua_arc.vendor.dahua import (  # noqa: E402
-    DHIPError,
-    DHIPTransport,
-    LoginError,
-    const,
-)
+from dahua import DHIPError, DHIPTransport, LoginError, const  # noqa: E402
 
 ALLOWED_SERVICES = ("AlarmRegion", "alarmSubregion", "alarm", "alarmSubSystem")
 METHOD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$")
@@ -72,9 +74,21 @@ ARM_LIKE = {
     "night",
 }
 DISARMED = "D"
+# Disarm-only parameter guesses for ``--shape`` (no JSON quoting needed). ``a`` is
+# the zero-based area index; one-based ids are ``a + 1``.
+SHAPES: dict[str, Callable[[int], dict[str, Any]]] = {
+    "areas-mode": lambda a: {"Mode": DISARMED, "Areas": [a]},
+    "area-mode": lambda a: {"Area": a, "Mode": DISARMED},
+    "index-mode": lambda a: {"Index": a, "Mode": DISARMED},
+    "areaid-mode": lambda a: {"AreaID": a + 1, "Mode": DISARMED},
+    "areas-objects": lambda a: {"Areas": [{"Index": a, "Mode": DISARMED}]},
+    "armmode-objects": lambda a: {"armMode": [{"Index": a, "Mode": DISARMED}]},
+}
+DEFAULT_METHOD = "AlarmRegion.setArmMode"
 EVENT_HINTS = ("arm", "alarm", "defence", "defense", "region")
 REDACT_KEYS = {
     "password",
+    "pin",
     "session",
     "sn",
     "serialno",
@@ -209,10 +223,13 @@ def run(
     factory=DHIPTransport,
 ) -> dict[str, Any]:
     check_method(args.method)
-    try:
-        params = json.loads(args.params_json)
-    except json.JSONDecodeError as exc:
-        raise GuardError(f"--params-json is not valid JSON: {exc}") from exc
+    if args.shape:
+        params = SHAPES[args.shape](args.area)
+    else:
+        try:
+            params = json.loads(args.params_json)
+        except json.JSONDecodeError as exc:
+            raise GuardError(f"--params-json is not valid JSON: {exc}") from exc
 
     control = factory(args.host, args.port, timeout=12)
     events = None
@@ -220,7 +237,7 @@ def run(
         "started": now(),
         "host_redacted": True,
         "method": args.method,
-        "params": params,
+        "params": redact(params),
         "allow_arm": args.allow_arm,
     }
     try:
@@ -260,14 +277,27 @@ def run(
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    if "--list-shapes" in (sys.argv[1:] if argv is None else argv):
+        for name, build in SHAPES.items():
+            print(f"{name:16} {json.dumps(build(0))}")
+        raise SystemExit(0)
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=const.DEFAULT_PORT)
     parser.add_argument("--user", required=True)
-    parser.add_argument("--method", required=True, help="e.g. AlarmRegion.setArmMode")
-    parser.add_argument("--params-json", required=True, help="request params as JSON")
+    parser.add_argument("--method", default=DEFAULT_METHOD)
+    params = parser.add_mutually_exclusive_group(required=True)
+    params.add_argument("--params-json", help="request params as JSON")
+    params.add_argument(
+        "--shape",
+        choices=sorted(SHAPES),
+        help="a built-in disarm-only guess (see --list-shapes); no quoting needed",
+    )
+    parser.add_argument(
+        "--area", type=int, default=0, help="zero-based area for --shape (default 0)"
+    )
     parser.add_argument(
         "--i-am-at-the-panel",
         action="store_true",
