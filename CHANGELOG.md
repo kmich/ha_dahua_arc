@@ -6,6 +6,10 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+### Added
+
+- Diagnostics now include the structure of `AlarmUserManager.getUserInfoAll` (`arm_state_probe.user_info_structure`): only key names, value types and counts, to see which fields an ARC user has. Every value is dropped, so no user names, codes or passwords are recorded.
+
 ## [0.4.4] - 2026-10-22
 
 ### Added

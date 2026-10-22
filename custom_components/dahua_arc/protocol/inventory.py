@@ -94,6 +94,12 @@ _ARM_METADATA_LIMIT = 60
 # services is ever called, so no user data or codes are read.
 _USER_SERVICES = ("AlarmUserManager", "AlarmKeyboard")
 _USER_METADATA_LIMIT = 80
+# The one user-data call the probe makes: its reply is reduced to key names,
+# value types and counts by structure_of(); no value is ever kept.
+_USER_INFO_METHOD = "AlarmUserManager.getUserInfoAll"
+_STRUCTURE_MAX_DEPTH = 6
+_STRUCTURE_MAX_KEYS = 50
+_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
 # system.methodSignature / methodHelp reject {"method_name": ...} on at least
 # the ARC3800H ("Request invalid param!"), so the probe tries each shape on one
 # method and uses the first that works for the rest.
@@ -596,6 +602,44 @@ def extract_method_names(response: dict[str, Any], service: str) -> list[str]:
     return sorted(result, key=str.casefold)
 
 
+def structure_of(value: Any, depth: int = 0) -> Any:
+    """Describe ``value`` by key names, value types and counts only.
+
+    Every scalar becomes its type name, a list becomes its length plus the
+    merged structure of its items, and a dict becomes its (identifier-like) key
+    names mapped to their structures. No string, number or other value is ever
+    returned, so user names, codes and passwords cannot leak through it.
+    """
+    if depth >= _STRUCTURE_MAX_DEPTH:
+        return "<max depth>"
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for index, (key, child) in enumerate(value.items()):
+            if index >= _STRUCTURE_MAX_KEYS:
+                out["<more keys>"] = len(value) - _STRUCTURE_MAX_KEYS
+                break
+            name = key if _FIELD_NAME_RE.match(str(key)) else "<non-identifier key>"
+            out[name] = structure_of(child, depth + 1)
+        return out
+    if isinstance(value, list):
+        merged: dict[str, Any] = {}
+        other: set[str] = set()
+        for item in value:
+            shape = structure_of(item, depth + 1)
+            if isinstance(shape, dict):
+                for key, child in shape.items():
+                    merged.setdefault(key, child)
+            else:
+                other.add(str(shape))
+        item_shape: Any = merged or (
+            sorted(other)[0] if len(other) == 1 else sorted(other)
+        )
+        return {"<list>": len(value), "<item>": item_shape if value else None}
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
 def method_is_research_candidate(method: str) -> bool:
     lower = method.casefold()
     return any(keyword in lower for keyword in _METHOD_KEYWORDS)
@@ -910,6 +954,7 @@ class InventoryRpcClient:
             "alarm_region_caps": None,
             "user_service_methods": {},
             "user_service_metadata": {},
+            "user_info_structure": None,
         }
         for name in ARM_STATE_CONFIG_NAMES:
             result["configs"][name] = self.safe_request(
@@ -980,6 +1025,16 @@ class InventoryRpcClient:
             result["user_service_methods"][service] = names
             if isinstance(names, list):
                 user_methods.extend(names)
+        info = self.safe_request(_USER_INFO_METHOD)
+        result["user_info_structure"] = {
+            "ok": info.get("ok", False),
+            "error_code": (info.get("response") or {}).get("error", {}).get("code")
+            if not info.get("ok")
+            else None,
+            "structure": structure_of((info.get("response") or {}).get("params"))
+            if info.get("ok")
+            else None,
+        }
         if build is not None:
             for method in user_methods[:_USER_METADATA_LIMIT]:
                 result["user_service_metadata"][method] = {
