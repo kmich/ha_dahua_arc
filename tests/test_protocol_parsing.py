@@ -223,3 +223,46 @@ def test_protocol_layer_does_not_import_home_assistant() -> None:
         "import custom_components.dahua_arc.research.detector_test\n"
     )
     subprocess.run([sys.executable, "-c", code, str(ROOT)], check=True)
+
+
+def test_structure_of_keeps_names_types_and_counts_only() -> None:
+    value = {
+        "users": [
+            {"Name": "Alice", "Code": "1234", "Id": 1, "Areas": [0, 1, 2]},
+            {"Name": "Bob", "Id": 2, "Flag": False},
+        ],
+        "Total": 2,
+        "John Smith": "secret",
+    }
+    shape = inventory.structure_of(value)
+    assert shape == {
+        "users": {
+            "<list>": 2,
+            "<item>": {
+                "Name": "str",
+                "Code": "str",
+                "Id": "int",
+                "Areas": {"<list>": 3, "<item>": "int"},
+                "Flag": "bool",
+            },
+        },
+        "Total": "int",
+        "<non-identifier key>": "str",
+    }
+    dumped = repr(shape)
+    for leaked in ("Alice", "Bob", "1234", "secret", "John"):
+        assert leaked not in dumped
+
+
+def test_structure_of_handles_empty_mixed_and_deep_values() -> None:
+    assert inventory.structure_of([]) == {"<list>": 0, "<item>": None}
+    assert inventory.structure_of(None) == "null"
+    assert inventory.structure_of([1, "a"]) == {"<list>": 2, "<item>": ["int", "str"]}
+    deep: object = "leaf"
+    for _ in range(10):
+        deep = {"k": deep}
+    assert "<max depth>" in repr(inventory.structure_of(deep))
+    wide = {f"k{i}": i for i in range(80)}
+    shape = inventory.structure_of(wide)
+    assert len(shape) == 51
+    assert shape["<more keys>"] == 30
