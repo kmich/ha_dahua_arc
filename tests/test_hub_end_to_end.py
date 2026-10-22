@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -325,13 +326,81 @@ def test_user_service_probe_lists_methods_and_never_calls_them(cgi_records) -> N
         "AlarmKeyboard.getKeyboards",
     }
     assert metadata["AlarmUserManager.getUsers"]["signature"]["ok"] is True
-    # Only listMethod is ever sent to the user services: no user data or codes.
+    # Only listMethod, plus the one structure-only getUserInfoAll call.
     user_calls = [
         call
         for call in arc.calls
         if call.startswith(("AlarmUserManager.", "AlarmKeyboard."))
     ]
-    assert user_calls == ["AlarmUserManager.listMethod", "AlarmKeyboard.listMethod"]
+    assert user_calls == [
+        "AlarmUserManager.listMethod",
+        "AlarmKeyboard.listMethod",
+        "AlarmUserManager.getUserInfoAll",
+    ]
+
+
+def test_user_info_is_recorded_as_structure_only(cgi_records) -> None:
+    secrets = ("Hunter2Pin", "SecretNameXyz", "99887766")
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
+    arc.getters["AlarmUserManager.getUserInfoAll"] = lambda _p: {
+        "userInfo": [
+            {
+                "UserName": secrets[1],
+                "Password": secrets[0],
+                "Phone": secrets[2],
+                "UserID": 7,
+                "Enable": True,
+                "Areas": [0, 1],
+            },
+            {"UserName": "Other", "UserID": 8, "Extra": None},
+        ]
+    }
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            hub.refresh_arm_state_probe()
+            probe = hub.diagnostics()["arm_state_probe"]
+        finally:
+            hub.stop()
+    info = probe["user_info_structure"]
+    assert info["ok"] is True
+    assert info["structure"] == {
+        "userInfo": {
+            "<list>": 2,
+            "<item>": {
+                # The diagnostics layer also masks the type of keys named like
+                # secrets or identifiers; only their names remain.
+                "UserName": "**REDACTED**",
+                "Password": "**REDACTED**",
+                "Phone": "**REDACTED**",
+                "UserID": "**REDACTED**",
+                "Enable": "bool",
+                "Areas": {"<list>": 2, "<item>": "int"},
+                "Extra": "null",
+            },
+        }
+    }
+    dumped = json.dumps(probe)
+    assert not any(secret in dumped for secret in secrets)
+    assert "Other" not in dumped
+
+
+def test_user_info_failure_records_only_the_error_code(cgi_records) -> None:
+    arc = _arc()
+    arc.config_tables["AreaArmMode"] = {"Areas": [{"ArmTime": 0, "Mode": "D"}]}
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "test-only", 3600)
+    with arc.patch():
+        try:
+            hub.start()
+            hub.refresh_arm_state_probe()
+            info = hub.diagnostics()["arm_state_probe"]["user_info_structure"]
+        finally:
+            hub.stop()
+    assert info["ok"] is False
+    assert info["structure"] is None
+    assert info["error_code"] == 405
 
 
 def test_user_service_metadata_skipped_when_no_shape_works(cgi_records) -> None:
@@ -342,7 +411,10 @@ def test_user_service_metadata_skipped_when_no_shape_works(cgi_records) -> None:
     assert (
         "AlarmUserManager.getUsers" in probe["user_service_methods"]["AlarmUserManager"]
     )
-    assert not [c for c in arc.calls if c.startswith("AlarmUserManager.get")]
+    # Only the structure-only getUserInfoAll is ever read from the user service.
+    assert [c for c in arc.calls if c.startswith("AlarmUserManager.get")] == [
+        "AlarmUserManager.getUserInfoAll"
+    ]
 
 
 def test_getter_probe_only_lists_getters() -> None:
