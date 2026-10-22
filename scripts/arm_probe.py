@@ -25,10 +25,13 @@ and in the transcript:
 
 Login client type. ``--client-type`` (default ``Web3.0``) sets the DHIP login
 ``clientType`` for a trial. ``--probe-client-types`` is a read-only mode: it logs
-in under each client type (``--client-types A,B`` to choose) and calls the
+in under ``Web3.0`` and ``Local`` (``--client-types A,B`` to choose) and calls the
 getters that fail under ``Web3.0`` once each, printing which succeed. It needs no
 shape, code or panel flag, never arms anything, and stops at once on a login
-failure that could count towards an account lockout:
+failure that could count towards an account lockout. ``NetKeyboard`` and
+``Dahua3.0`` client types are refused: a NetKeyboard login matches the IPS
+signature "ET EXPLOIT Dahua Netkeyboard Authentication Bypass", which blocks the
+traffic and can cut Home Assistant off from the ARC:
 
     py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
         --probe-client-types --out client_types.json
@@ -141,8 +144,12 @@ CODE_SHAPES: dict[str, Callable[[int, str, int], dict[str, Any]]] = {
 DEFAULT_METHOD = "AlarmRegion.setArmMode"
 DEFAULT_CLIENT_TYPE = "Web3.0"
 # --probe-client-types: the DHIP login "clientType" values tried, and the
-# read-only getters called under each. Unknown values simply fail to log in.
-CLIENT_TYPES = ("Web3.0", "Local", "NetKeyboard", "Dahua3.0", "Dahua3.0-Web3.0")
+# read-only getters called under each. Only the two ordinary types are safe: a
+# NetKeyboard login matches the IPS signature "ET EXPLOIT Dahua Netkeyboard
+# Authentication Bypass" (it got the probe's traffic blocked and Home Assistant
+# cut off from the ARC), and Dahua3.0 types timed out right after it.
+CLIENT_TYPES = ("Web3.0", "Local")
+FORBIDDEN_CLIENT_TYPE_PREFIXES = ("netkeyboard", "dahua3.0")
 CLIENT_TYPE_GETTERS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("AlarmRegion.getArmMode", {}),
     ("AlarmRegion.getZoneArmMode", {}),
@@ -211,6 +218,14 @@ def redact(value: Any) -> Any:
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
+
+
+def check_client_type(name: str) -> None:
+    if name.casefold().startswith(FORBIDDEN_CLIENT_TYPE_PREFIXES):
+        raise GuardError(
+            f"client type {name!r} is refused: network IPS flags it as a Dahua "
+            "exploit and blocks the traffic (use Web3.0 or Local)"
+        )
 
 
 def check_method(method: str) -> None:
@@ -307,6 +322,7 @@ def run(
     factory=DHIPTransport,
 ) -> dict[str, Any]:
     check_method(args.method)
+    check_client_type(args.client_type)
     code = ""
     if args.prompt_code:
         code = ask_code("Alarm-user code (hidden; never printed or stored): ").strip()
@@ -393,8 +409,11 @@ def probe_client_types(
         check_method(method)
         if not method.rpartition(".")[2].startswith("get"):
             raise GuardError(f"{method} is not a getter")
+    client_types = args.client_types or CLIENT_TYPES
+    for client_type in client_types:
+        check_client_type(client_type)
     results: list[dict[str, Any]] = []
-    for client_type in args.client_types or CLIENT_TYPES:
+    for client_type in client_types:
         entry: dict[str, Any] = {"client_type": client_type, "calls": []}
         results.append(entry)
         transport = factory(args.host, args.port, timeout=12)
@@ -507,6 +526,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--listen", type=float, default=20.0, help="seconds of events")
     parser.add_argument("--out", type=Path, help="write the redacted transcript here")
     args = parser.parse_args(argv)
+    for name in [args.client_type, *(args.client_types or [])]:
+        try:
+            check_client_type(name)
+        except GuardError as exc:
+            parser.error(str(exc))
     if args.probe_client_types:
         if args.shape or args.params_json or args.prompt_code:
             parser.error("--probe-client-types takes no shape, params or code")
