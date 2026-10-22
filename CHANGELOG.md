@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Changed
 
+- `scripts/arm_probe.py` (developer tool, not shipped): the client-type probe now tries only `Web3.0` and `Local`, and refuses `NetKeyboard` and `Dahua3.0` client types, because a NetKeyboard login matches a Dahua-exploit IPS signature and gets the traffic blocked.
+
+### Changed
+
 - `scripts/arm_probe.py` (developer tool, not shipped): `--client-type` sets the DHIP login client type, and the read-only `--probe-client-types` mode logs in under several client types and calls the failing getters once each, to see whether the arm methods depend on how the session identifies itself.
 
 ### Changed
