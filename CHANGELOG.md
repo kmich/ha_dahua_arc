@@ -6,12 +6,11 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-22
+
 ### Added
 
 - Diagnostics now include `AlarmRegion.getCaps` and the method names (plus signature/help metadata) of the `AlarmUserManager` and `AlarmKeyboard` services (`arm_state_probe.alarm_region_caps`, `user_service_methods`, `user_service_metadata`), to find out how the ARC models arming users. Only `listMethod` and metadata calls are made for those services; no user data or codes are read.
-
-### Added
-
 - `scripts/arm_probe.py`: a standalone, never-shipped script for supervised single-call arm/disarm trials against a real ARC (developer tool; not part of the integration).
 
 ## [0.4.3] - 2026-10-21
@@ -121,7 +120,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.0...v0.4.1
