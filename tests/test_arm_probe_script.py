@@ -295,3 +295,146 @@ def test_list_shapes_prints_and_exits(probe, capsys) -> None:
         probe.parse_args(["--list-shapes"])
     assert stop.value.code == 0
     assert "areas-mode" in capsys.readouterr().out
+
+
+CODE = "S3cretCode77"
+
+
+def _code_args(probe: ModuleType, *extra: str):
+    return probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--method",
+            ARM_METHOD,
+            "--i-am-at-the-panel",
+            "--yes",
+            "--listen",
+            "0.3",
+            *extra,
+        ]
+    )
+
+
+def _run_code(probe: ModuleType, arc: FakeArc, *extra: str, code: str = CODE):
+    args = _code_args(probe, *extra)
+    lines: list[str] = []
+    with arc.patch():
+        try:
+            transcript = probe.run(
+                args, PASSWORD, emit=lines.append, ask_code=lambda _prompt: code
+            )
+        finally:
+            arc.close_timers()
+    return transcript, lines
+
+
+def test_code_reaches_the_arc_but_is_never_printed_or_stored(probe) -> None:
+    arc = _arc()
+    transcript, lines = _run_code(
+        probe,
+        arc,
+        "--shape",
+        "areas-usernumber",
+        "--user-number",
+        "3",
+        "--prompt-code",
+    )
+    # The ARC got the real code, once.
+    assert arc.arm_requests == [
+        {"Mode": "D", "Areas": [0], "UserNumber": 3, "Password": CODE}
+    ]
+    # It appears nowhere that is printed or written.
+    assert CODE not in "\n".join(lines)
+    assert CODE not in json.dumps(transcript)
+    assert transcript["params"]["Password"] == "**REDACTED**"
+    assert any("**CODE**" in line for line in lines)  # the request is shown masked
+
+
+@pytest.mark.parametrize(
+    "shape", ["areas-password", "areas-userid", "areas-user-object"]
+)
+def test_code_shapes_send_the_code_under_the_expected_key(probe, shape) -> None:
+    arc = _arc()
+    _run_code(probe, arc, "--shape", shape, "--prompt-code")
+    (request,) = arc.arm_requests
+    leaves = probe.string_leaves(request)
+    assert CODE in leaves
+    assert request["Mode"] == "D"
+
+
+def test_params_json_code_token_is_replaced_by_the_prompted_code(probe) -> None:
+    arc = _arc()
+    transcript, lines = _run_code(
+        probe,
+        arc,
+        "--params-json",
+        '{"Mode": "D", "Areas": [0], "Pwd": "__CODE__"}',
+        "--prompt-code",
+    )
+    assert arc.arm_requests == [{"Mode": "D", "Areas": [0], "Pwd": CODE}]
+    assert CODE not in "\n".join(lines)
+    assert CODE not in json.dumps(transcript)
+
+
+def test_code_echoed_in_a_reply_is_scrubbed(probe) -> None:
+    assert probe.scrub(f'{{"echo": "{CODE}"}}', CODE) == '{"echo": "**CODE**"}'
+    assert probe.scrub("nothing here", "") == "nothing here"
+
+
+def test_empty_code_sends_nothing(probe) -> None:
+    arc = _arc()
+    with pytest.raises(probe.GuardError, match="no code"):
+        _run_code(probe, arc, "--shape", "areas-password", "--prompt-code", code="  ")
+    assert arc.arm_requests == []
+
+
+def test_code_shape_still_obeys_the_disarm_guards(probe) -> None:
+    arc = _arc(["D", "p1", "D"])
+    with pytest.raises(probe.GuardError, match="area 1: p1"):
+        _run_code(probe, arc, "--shape", "areas-password", "--prompt-code")
+    assert arc.arm_requests == []
+
+
+def test_a_code_shape_needs_prompt_code(probe) -> None:
+    with pytest.raises(SystemExit):
+        _code_args(probe, "--shape", "areas-password")
+
+
+def test_prompt_code_needs_something_that_uses_it(probe) -> None:
+    with pytest.raises(SystemExit):
+        _code_args(probe, "--shape", "areas-mode", "--prompt-code")
+    with pytest.raises(SystemExit):
+        _code_args(probe, "--params-json", "{}", "--prompt-code")
+
+
+def test_main_refuses_prompt_code_without_a_terminal(
+    probe, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setattr(probe.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setenv("ARC_PASSWORD", PASSWORD)
+    code = probe.main(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--method",
+            ARM_METHOD,
+            "--shape",
+            "areas-password",
+            "--prompt-code",
+            "--i-am-at-the-panel",
+        ]
+    )
+    assert code == 2
+    assert "needs a terminal" in capsys.readouterr().out
+
+
+def test_code_shapes_are_disarm_only_with_the_code_masked(probe) -> None:
+    for name, build in probe.CODE_SHAPES.items():
+        masked = build(2, probe.CODE_PLACEHOLDER, 1)
+        assert "D" in probe.string_leaves(masked), name
+        probe.check_disarm_only(masked, ["D", "D", "D"])
