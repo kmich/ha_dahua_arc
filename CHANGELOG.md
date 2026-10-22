@@ -6,38 +6,23 @@ The project uses semantic versioning for release tags where practical.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+
 ### Added
 
-- Optional, experimental arming through a relay-driven keyfob (`docs/arm-control/06-keyfob-relay.md`). With arm control on, a new option **How commands are sent** can be set to a paired keyfob pressed by relays: choose the Home Assistant `button`, `switch` or `script` entities that press the keyfob's Home, Away and (opt-in) Disarm buttons. A whole-system alarm panel then arms through them, with the result confirmed from the ARC's events, one press per command and never a retry. Disarm is off by default, SOS cannot be mapped, an unavailable relay is never pressed, and a missing relay entity raises a repair. Not yet verified on hardware.
-- Internal groundwork for arming through a paired keyfob driven by relay entities (design in `docs/arm-control/06-keyfob-relay.md`): the arm controller can issue a command through a sender instead of an RPC, and a new `KeyfobSender` presses one of three mapped buttons (Home, Away, Disarm; never SOS) once, never retrying, with the result confirmed from the ARC's events. Nothing in Home Assistant uses it yet, so there is no behaviour change.
-
-### Documentation
-
-- Design note `docs/arm-control/06-keyfob-relay.md`: arming and disarming the ARC from Home Assistant by pressing a spare paired keyfob through relay-driven button entities, with confirmation from the ARC's own events. Design only; nothing is implemented yet.
-
-### Documentation
-
-- Recorded the arm/disarm search results in `docs/arm-control/02-protocol.md` (all disarm-only trials, the key sweep, login client types, capabilities and user fields, and what is left) and clarified in the README why the integration cannot arm or disarm.
+- **Experimental:** optional arming through a relay-driven keyfob (design and hardware acceptance checklist in `docs/arm-control/06-keyfob-relay.md`). The ARC's own arm command is not available to Home Assistant, but the ARC accepts arm and disarm from a paired keyfob, so with arm control on a new option **How commands are sent** can be set to *Paired keyfob pressed by relays*: choose the Home Assistant `button`, `switch` or `script` entities that press a spare keyfob's Home, Away and (opt-in) Disarm buttons. A whole-system alarm panel then presses them, with the result confirmed from the ARC's own events. One press per command and never a retry; a press with no confirmation fails as unconfirmed and says it may still have worked. Disarm is off by default and keeps the code check, SOS cannot be mapped, an unavailable relay is never pressed, a missing relay entity raises a repair, and diagnostics list the mapped modes without entity ids. The default setting is unchanged: arm control stays off and the integration read-only.
+- Internal: the arm controller can issue a command through a sender instead of an RPC, and a new `KeyfobSender` presses one of three mapped buttons once.
 
 ### Changed
 
-- `scripts/arm_probe.py` (developer tool, not shipped): new disarm-only shapes built on the `Zones` key, the one parameter name the ARC recognised in the key sweep (`zones-mode`, `zones-armmode`, `zones-objects`, `zones-mode-1based`, and code-bearing `zones-password`, `zones-usernumber`, `zones-userid`, `zones-user-object`).
+- Documentation: `docs/arm-control/02-protocol.md` records the arm-command search (every disarm-only trial, the key sweep, login client types, capabilities and user fields), the design note for keyfob arming was added, and the README explains why the integration cannot arm directly.
+- `scripts/arm_probe.py` (developer tool, never shipped): supervised single-call trials with a hidden alarm-user code, disarm-only guards, `Zones`-based shapes, a read-only key sweep and a client-type probe limited to `Web3.0` and `Local` (a `NetKeyboard` login matches a Dahua-exploit IPS signature).
 
-### Changed
+### Known limitations
 
-- `scripts/arm_probe.py` (developer tool, not shipped): a read-only `--sweep-keys` mode calls two getters on one `Web3.0` session with about 50 candidate parameter key names and reports the keys whose error differs from the baseline, i.e. names the ARC recognises. It stops at once on any transport error.
-
-### Changed
-
-- `scripts/arm_probe.py` (developer tool, not shipped): the client-type probe now tries only `Web3.0` and `Local`, and refuses `NetKeyboard` and `Dahua3.0` client types, because a NetKeyboard login matches a Dahua-exploit IPS signature and gets the traffic blocked.
-
-### Changed
-
-- `scripts/arm_probe.py` (developer tool, not shipped): `--client-type` sets the DHIP login client type, and the read-only `--probe-client-types` mode logs in under several client types and calls the failing getters once each, to see whether the arm methods depend on how the session identifies itself.
-
-### Changed
-
-- `scripts/arm_probe.py` (developer tool, not shipped): `--prompt-code` asks for an alarm-user code without echo for code-bearing disarm-only shapes; the code is never printed, logged or stored.
+- Keyfob arming is **not verified on hardware**. Which areas a keyfob controls, what it does with an open zone and whether there is an exit delay are open questions; follow the acceptance checklist before relying on it.
+- The ARC's own arm and disarm command could not be found (see `docs/arm-control/02-protocol.md`), so the default remains read-only and arming through the integration needs a keyfob and relays.
+- Home Assistant presses only the buttons you map. It cannot press SOS, and in this mode it has only the whole-system panel, not one per area.
 
 ## [0.4.5] - 2026-10-22
 
@@ -159,7 +144,8 @@ The project uses semantic versioning for release tags where practical.
 - Research-mode PIRCam / LowRateWPAN behavior does not feed production wired-zone state.
 - Live hardware restart/outage and upgrade behavior should still be validated on each relevant ARC/firmware combination before relying on the integration for alarm-dependent automations.
 
-[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/kmich/ha_dahua_arc/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/kmich/ha_dahua_arc/compare/v0.4.2...v0.4.3
