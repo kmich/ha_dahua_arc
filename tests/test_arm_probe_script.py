@@ -594,3 +594,126 @@ def test_exploit_flagged_client_types_are_refused(probe, name) -> None:
 def test_ordinary_client_types_are_accepted(probe) -> None:
     for name in ("Web3.0", "Local", "web3.0"):
         probe.check_client_type(name)
+
+
+def _sweep_args(probe: ModuleType, *extra: str):
+    return probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--sweep-keys", *extra]
+    )
+
+
+def _sweep_arc() -> FakeArc:
+    arc = _arc()
+    for method in probe_methods():
+        # Generic error, except that a recognised key ("Zones") changes it.
+        arc.getter_errors[method] = lambda p: (
+            268632080 if isinstance(p, dict) and "Zones" in p else -267976701
+        )
+    return arc
+
+
+def probe_methods() -> tuple[str, ...]:
+    return ("AlarmRegion.getZoneArmMode", "AlarmRegion.getUserArmModeAuth")
+
+
+def test_key_sweep_reports_the_keys_whose_error_differs(probe) -> None:
+    arc = _sweep_arc()
+    lines: list[str] = []
+    with arc.patch():
+        result = probe.sweep_keys(
+            _sweep_args(probe), PASSWORD, emit=lines.append, sleep=lambda _s: None
+        )
+    assert result["aborted"] is None
+    zone = result["methods"]["AlarmRegion.getZoneArmMode"]
+    assert zone["baseline"]["code"] == -267976701
+    assert {c["key"] for c in zone["recognised"]} == {"Zones"}
+    assert [c["value"] for c in zone["recognised"]] == [0, [0]]
+    assert zone["recognised"][0]["outcome"]["code"] == 268632080
+    # Every candidate key and value was tried; the same keys behave the same for
+    # the second method here, so it also lists "Zones".
+    expected = len(probe.SWEEP_KEYS) * len(probe.SWEEP_VALUES)
+    assert len(zone["calls"]) == expected
+    assert any("recognised: {'Zones': 0} -> 268632080" in line for line in lines)
+
+
+def test_key_sweep_is_read_only_and_single_session(probe) -> None:
+    arc = _sweep_arc()
+    with arc.patch():
+        probe.sweep_keys(
+            _sweep_args(probe), PASSWORD, emit=lambda _m: None, sleep=lambda _s: None
+        )
+    assert arc.arm_requests == []
+    sent = [c for c in arc.calls if c not in ("global.login", "global.logout")]
+    assert set(sent) == set(probe_methods())
+    assert arc.calls.count("global.login") == 2  # challenge + answer: one login
+
+
+def test_key_sweep_stops_at_the_first_transport_error(probe) -> None:
+    arc = _sweep_arc()
+    seen: list[str] = []
+
+    class Flaky(probe.DHIPTransport):
+        def call(self, method, params=None, **kwargs):
+            seen.append(method)
+            if len(seen) > 5:
+                raise TimeoutError("timed out")
+            return super().call(method, params, **kwargs)
+
+    lines: list[str] = []
+    with arc.patch():
+        result = probe.sweep_keys(
+            _sweep_args(probe),
+            PASSWORD,
+            emit=lines.append,
+            factory=Flaky,
+            sleep=lambda _s: None,
+        )
+    assert result["aborted"].startswith("TimeoutError")
+    assert len(seen) == 6  # nothing is retried after the failure
+    assert any("Stopped" in line and "IPS" in line for line in lines)
+
+
+def test_key_sweep_methods_are_all_getters(probe) -> None:
+    for method in probe.SWEEP_METHODS:
+        assert method.rsplit(".", 1)[-1].startswith("get"), method
+        probe.check_method(method)
+    assert len(set(probe.SWEEP_KEYS)) == len(probe.SWEEP_KEYS)
+
+
+def test_key_sweep_argument_rules(probe) -> None:
+    args = _sweep_args(probe)
+    assert args.sweep_keys is True
+    assert args.sweep_delay == 0.2
+    for bad in (
+        ["--probe-client-types"],
+        ["--shape", "areas-mode"],
+        ["--params-json", "{}"],
+    ):
+        with pytest.raises(SystemExit):
+            _sweep_args(probe, *bad)
+
+
+def test_main_runs_the_key_sweep_and_writes_a_transcript(
+    probe, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    arc = _sweep_arc()
+    monkeypatch.setenv("ARC_PASSWORD", PASSWORD)
+    monkeypatch.setattr(probe.time, "sleep", lambda _s: None)
+    out = tmp_path / "sweep.json"
+    with arc.patch():
+        code = probe.main(
+            [
+                "--host",
+                "192.0.2.10",
+                "--user",
+                "admin",
+                "--sweep-keys",
+                "--out",
+                str(out),
+            ]
+        )
+    assert code == 0
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert set(written["methods"]) == set(probe_methods())
+    assert PASSWORD not in out.read_text(encoding="utf-8")
+    assert "recognised" in capsys.readouterr().out

@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Changed
 
+- `scripts/arm_probe.py` (developer tool, not shipped): a read-only `--sweep-keys` mode calls two getters on one `Web3.0` session with about 50 candidate parameter key names and reports the keys whose error differs from the baseline, i.e. names the ARC recognises. It stops at once on any transport error.
+
+### Changed
+
 - `scripts/arm_probe.py` (developer tool, not shipped): the client-type probe now tries only `Web3.0` and `Local`, and refuses `NetKeyboard` and `Dahua3.0` client types, because a NetKeyboard login matches a Dahua-exploit IPS signature and gets the traffic blocked.
 
 ### Changed
