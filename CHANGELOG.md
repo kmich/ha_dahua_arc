@@ -8,6 +8,10 @@ The project uses semantic versioning for release tags where practical.
 
 ### Changed
 
+- `scripts/arm_probe.py` (developer tool, not shipped): `--client-type` sets the DHIP login client type, and the read-only `--probe-client-types` mode logs in under several client types and calls the failing getters once each, to see whether the arm methods depend on how the session identifies itself.
+
+### Changed
+
 - `scripts/arm_probe.py` (developer tool, not shipped): `--prompt-code` asks for an alarm-user code without echo for code-bearing disarm-only shapes; the code is never printed, logged or stored.
 
 ## [0.4.5] - 2026-10-22

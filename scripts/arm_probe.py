@@ -23,6 +23,16 @@ and in the transcript:
         --shape areas-usernumber --user-number 1 --prompt-code \\
         --i-am-at-the-panel --out trial9.json
 
+Login client type. ``--client-type`` (default ``Web3.0``) sets the DHIP login
+``clientType`` for a trial. ``--probe-client-types`` is a read-only mode: it logs
+in under each client type (``--client-types A,B`` to choose) and calls the
+getters that fail under ``Web3.0`` once each, printing which succeed. It needs no
+shape, code or panel flag, never arms anything, and stops at once on a login
+failure that could count towards an account lockout:
+
+    py -3.14 scripts/arm_probe.py --host 192.168.4.20 --user admin \\
+        --probe-client-types --out client_types.json
+
 What a run does:
 
 1. logs in, reads ``AreaArmMode`` (before);
@@ -129,6 +139,19 @@ CODE_SHAPES: dict[str, Callable[[int, str, int], dict[str, Any]]] = {
     },
 }
 DEFAULT_METHOD = "AlarmRegion.setArmMode"
+DEFAULT_CLIENT_TYPE = "Web3.0"
+# --probe-client-types: the DHIP login "clientType" values tried, and the
+# read-only getters called under each. Unknown values simply fail to log in.
+CLIENT_TYPES = ("Web3.0", "Local", "NetKeyboard", "Dahua3.0", "Dahua3.0-Web3.0")
+CLIENT_TYPE_GETTERS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("AlarmRegion.getArmMode", {}),
+    ("AlarmRegion.getZoneArmMode", {}),
+    ("AlarmRegion.getZoneArmMode", {"Zones": [0]}),
+    ("AlarmRegion.getUserArmModeAuth", {}),
+    ("AlarmRegion.getUserArmModeAuth", {"UserID": 0}),
+)
+# Login failures that may count towards an account lockout: stop at once.
+LOCKOUT_RISK_CODES = {268632080, 268632081, 268632082}
 EVENT_HINTS = ("arm", "alarm", "defence", "defense", "region")
 REDACT_KEYS = {
     "password",
@@ -238,7 +261,7 @@ def attach_events(args: argparse.Namespace, password: str, factory) -> DHIPTrans
     transport = factory(args.host, args.port, timeout=12)
     try:
         transport.connect()
-        transport.login(args.user, password)
+        transport.login(args.user, password, args.client_type)
         reply, _ = transport.request(const.EVENT_ATTACH, {"codes": ["All"]})
         if not reply.get("result"):
             raise DHIPError(f"eventManager.attach failed: {reply}")
@@ -318,7 +341,7 @@ def run(
     }
     try:
         control.connect()
-        control.login(args.user, password)
+        control.login(args.user, password, args.client_type)
         before = read_modes(control)
         transcript["modes_before"] = before
         say(f"AreaArmMode before: {before}")
@@ -353,6 +376,68 @@ def run(
                     transport.close()
 
 
+def probe_client_types(
+    args: argparse.Namespace,
+    password: str,
+    *,
+    emit: Callable[[str], None] = print,
+    factory=DHIPTransport,
+) -> list[dict[str, Any]]:
+    """Log in under each client type and call the read-only getters once each.
+
+    Nothing here can change the panel: every method is a ``get*`` from
+    CLIENT_TYPE_GETTERS. A login failure that could count towards an account
+    lockout stops the whole probe immediately.
+    """
+    for method, _params in CLIENT_TYPE_GETTERS:
+        check_method(method)
+        if not method.rpartition(".")[2].startswith("get"):
+            raise GuardError(f"{method} is not a getter")
+    results: list[dict[str, Any]] = []
+    for client_type in args.client_types or CLIENT_TYPES:
+        entry: dict[str, Any] = {"client_type": client_type, "calls": []}
+        results.append(entry)
+        transport = factory(args.host, args.port, timeout=12)
+        try:
+            transport.connect()
+            try:
+                transport.login(args.user, password, client_type)
+            except LoginError as exc:
+                entry["login"] = f"failed (code {exc.code})"
+                emit(f"{client_type:16} login failed (code {exc.code})")
+                if exc.code in LOCKOUT_RISK_CODES:
+                    emit("Stopping: this failure can count towards a lockout.")
+                    break
+                continue
+            entry["login"] = "ok"
+            emit(f"{client_type:16} login ok")
+            for method, params in CLIENT_TYPE_GETTERS:
+                reply = transport.call(method, params, fragmented=True)
+                ok = bool(reply.get("result"))
+                call = {
+                    "method": method,
+                    "params": params,
+                    "ok": ok,
+                    "error_code": None
+                    if ok
+                    else (reply.get("error") or {}).get("code"),
+                    # key names only: no reply value is stored
+                    "reply_keys": sorted(reply["params"])
+                    if ok and isinstance(reply.get("params"), dict)
+                    else [],
+                }
+                entry["calls"].append(call)
+                outcome = "OK" if ok else f"error {call['error_code']}"
+                emit(f"    {method} {json.dumps(params)} -> {outcome}")
+        except (DHIPError, OSError) as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            emit(f"{client_type:16} {entry['error']}")
+        finally:
+            with contextlib.suppress(Exception):
+                transport.close()
+    return results
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     if "--list-shapes" in (sys.argv[1:] if argv is None else argv):
         for name, build in SHAPES.items():
@@ -368,7 +453,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=const.DEFAULT_PORT)
     parser.add_argument("--user", required=True)
     parser.add_argument("--method", default=DEFAULT_METHOD)
-    params = parser.add_mutually_exclusive_group(required=True)
+    params = parser.add_mutually_exclusive_group(required=False)
     params.add_argument("--params-json", help="request params as JSON")
     params.add_argument(
         "--shape",
@@ -377,6 +462,23 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--area", type=int, default=0, help="zero-based area for --shape (default 0)"
+    )
+    parser.add_argument(
+        "--client-type",
+        default=DEFAULT_CLIENT_TYPE,
+        help="DHIP login clientType for the trial (default Web3.0)",
+    )
+    parser.add_argument(
+        "--probe-client-types",
+        action="store_true",
+        help="read-only: log in under each client type and call the failing "
+        "getters once each; nothing is armed or changed",
+    )
+    parser.add_argument(
+        "--client-types",
+        type=lambda text: [part.strip() for part in text.split(",") if part.strip()],
+        help="comma-separated clientType values for --probe-client-types "
+        f"(default {','.join(CLIENT_TYPES)})",
     )
     parser.add_argument(
         "--prompt-code",
@@ -405,6 +507,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--listen", type=float, default=20.0, help="seconds of events")
     parser.add_argument("--out", type=Path, help="write the redacted transcript here")
     args = parser.parse_args(argv)
+    if args.probe_client_types:
+        if args.shape or args.params_json or args.prompt_code:
+            parser.error("--probe-client-types takes no shape, params or code")
+        return args
+    if not (args.shape or args.params_json):
+        parser.error("one of --shape or --params-json is required")
     if not args.i_am_at_the_panel:
         parser.error("refusing to run without --i-am-at-the-panel")
     if args.shape in CODE_SHAPES and not args.prompt_code:
@@ -430,7 +538,13 @@ def main(argv: list[str] | None = None) -> int:
         print("Set ARC_PASSWORD (the password is never taken from the command line).")
         return 2
     try:
-        transcript = run(args, password)
+        if args.probe_client_types:
+            transcript = {
+                "started": now(),
+                "results": probe_client_types(args, password),
+            }
+        else:
+            transcript = run(args, password)
     except GuardError as exc:
         print(f"Refused: {exc}")
         return 2
