@@ -1,5 +1,5 @@
 pytest-homeassistant-custom-component==0.13.373
 pytest-cov>=7,<8
-ruff==0.17.1
+ruff==0.17.2
 # Required by the Home Assistant camera component, which the platform tests load.
 PyTurboJPEG==1.8.3
