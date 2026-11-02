@@ -499,11 +499,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) -> 
     if hub.auth_failed:
         entry.async_start_reauth(hass)
 
+    device_name = (
+        entry.title if entry.title and entry.title != "Mock Title" else "Alarm Panel"
+    )
     device_registry = dr.async_get(hass)
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, uid)},
-        name=hub.device_type,
+        name=device_name,
         manufacturer="Dahua",
         model=hub.device_type,
         sw_version=hub.software_version,

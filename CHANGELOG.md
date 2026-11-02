@@ -23,6 +23,8 @@ The project uses semantic versioning for release tags where practical.
 - Eliminated `error 289407505: System Arming` caused by attempting to write to the installer configuration table `AreaArmMode` while the system was armed.
 - Fixed `AlarmRegion.setArmMode` parameter rejection by supplying `pwd` and 1-based area indexes.
 - Fixed PIR camera image download serving empty 0-byte payloads in Lovelace when research mode was disabled.
+- **Dedicated Zone Sensor Naming**: Primary zone binary sensors that sit on their own dedicated device (a MultiIO child device or a radio device carrying only that single zone) now use the device's name (`_attr_name = None`), eliminating duplicate entity names in Home Assistant. Zones falling back to the root panel or sharing a multi-input radio device retain their specific zone names.
+- **Readable Root Panel Device Name**: Root panel device uses the readable config entry title or `"Alarm Panel"` rather than the raw model string (`hub.device_type`), keeping the hardware model in the device `model` attribute and creating clean entity IDs.
 
 ## [0.6.0] - 2026-11-01
 

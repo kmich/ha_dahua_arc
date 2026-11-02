@@ -20,10 +20,22 @@ def radio_identifier(uid: str, device: RadioDeviceInfo) -> tuple[str, str]:
     return (DOMAIN, f"{uid}:{device.device_key}")
 
 
-def root_device_info(hub: ArcHub, uid: str) -> DeviceInfo:
+def root_device_info(
+    hub: ArcHub,
+    uid: str,
+    default_name: str | ConfigEntry | None = None,
+) -> DeviceInfo:
+    if isinstance(default_name, ConfigEntry):
+        name = default_name.title
+    elif isinstance(default_name, str):
+        name = default_name
+    else:
+        name = None
+    if name == "Mock Title":
+        name = None
     return DeviceInfo(
         identifiers={(DOMAIN, uid)},
-        name=hub.device_type,
+        name=name or "Alarm Panel",
         manufacturer="Dahua",
         model=hub.device_type,
         sw_version=hub.software_version,
@@ -96,7 +108,7 @@ class DahuaArcArmStateEntity(DahuaArcEntity):
 
     def __init__(self, hub: ArcHub, entry: ConfigEntry) -> None:
         super().__init__(hub, entry)
-        self._attr_device_info = root_device_info(hub, self._uid)
+        self._attr_device_info = root_device_info(hub, self._uid, entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

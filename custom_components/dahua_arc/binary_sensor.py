@@ -61,21 +61,48 @@ def _device_class(zone: Zone) -> BinarySensorDeviceClass | None:
 
 
 def _device_info_for_zone(
-    hub: ArcHub, uid: str, zone: Zone
-) -> DeviceInfo | ChildDeviceInfo:
-    child_id = hub.child_device_ids.get(zone.index)
+    hub: ArcHub,
+    uid: str,
+    zone: Zone,
+    default_name: str | ConfigEntry | None = None,
+) -> tuple[DeviceInfo | ChildDeviceInfo, bool]:
+    child_device_ids = getattr(hub, "child_device_ids", {})
+    multiio_parent_ids = getattr(hub, "multiio_parent_ids", {})
+    child_id = child_device_ids.get(zone.index)
     if zone.is_multiio and child_id:
-        parent = hub.multiio_parent_ids.get(zone.level1)
+        parent = multiio_parent_ids.get(zone.level1)
         if parent:
-            return ChildDeviceInfo(
-                identifiers={(DOMAIN, f"{uid}:zone:{zone.index}")},
-                name=zone.name,
-                parent_device_id=parent,
+            return (
+                ChildDeviceInfo(
+                    identifiers={(DOMAIN, f"{uid}:zone:{zone.index}")},
+                    name=zone.name,
+                    parent_device_id=parent,
+                ),
+                True,
             )
-    radio = hub.radio_device_for_zone(zone)
+    radio = (
+        hub.radio_device_for_zone(zone)
+        if hasattr(hub, "radio_device_for_zone")
+        else None
+    )
     if radio is not None:
-        return radio_device_info(uid, radio)
-    return root_device_info(hub, uid)
+        pz = getattr(hub, "primary_zones", {})
+        pz_list = list(pz.values()) if isinstance(pz, dict) else list(pz)
+        other_primary_zones = [
+            z
+            for z in pz_list
+            if z.index != zone.index
+            and (
+                (
+                    hasattr(hub, "radio_device_for_zone")
+                    and hub.radio_device_for_zone(z) == radio
+                )
+                or (getattr(z, "level1", None) is not None and z.level1 == zone.level1)
+            )
+        ]
+        is_dedicated = len(other_primary_zones) == 0
+        return (radio_device_info(uid, radio), is_dedicated)
+    return (root_device_info(hub, uid, default_name), False)
 
 
 async def async_setup_entry(
@@ -124,7 +151,7 @@ class DahuaArcConnectivity(DahuaArcEntity, BinarySensorEntity):
     def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub]):
         super().__init__(hub, entry)
         self._attr_unique_id = f"{self._uid}_connection"
-        self._attr_device_info = root_device_info(hub, self._uid)
+        self._attr_device_info = root_device_info(hub, self._uid, entry)
 
     @property
     def is_on(self) -> bool:
@@ -225,9 +252,12 @@ class DahuaArcZoneBinarySensor(DahuaArcEntity, BinarySensorEntity):
         self._area_match_score = decision.get("score")
         self._area_match_reason = decision.get("reason")
         self._attr_unique_id = f"{self._uid}_zone_{zone.index}"
-        self._attr_name = zone.name
         self._attr_device_class = _device_class(zone)
-        self._attr_device_info = _device_info_for_zone(hub, self._uid, zone)
+        device_info, is_dedicated = _device_info_for_zone(
+            hub, self._uid, zone, default_name=entry
+        )
+        self._attr_device_info = device_info
+        self._attr_name = None if is_dedicated else zone.name
 
     @property
     def is_on(self) -> bool | None:

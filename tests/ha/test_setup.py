@@ -11,6 +11,11 @@ from custom_components.dahua_arc import (
     async_setup_entry,
     async_unload_entry,
 )
+from custom_components.dahua_arc.binary_sensor import (
+    DahuaArcZoneBinarySensor,
+    _device_info_for_zone,
+)
+from custom_components.dahua_arc.client import RadioDeviceInfo, Zone
 from custom_components.dahua_arc.const import (
     CONF_ARC_SERIAL,
     CONF_ENABLE_RESEARCH_FEATURES,
@@ -19,6 +24,7 @@ from custom_components.dahua_arc.const import (
     ISSUE_SERIAL_MISMATCH,
 )
 from custom_components.dahua_arc.diagnostics import async_get_config_entry_diagnostics
+from custom_components.dahua_arc.entity import root_device_info
 from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, STATE_OFF
@@ -126,8 +132,14 @@ async def test_platforms_create_expected_entities(hass: HomeAssistant) -> None:
     assert zone_id is not None
     state = hass.states.get(zone_id)
     assert state.state == STATE_OFF
+    assert state.name == "Kitchen Window"
     assert state.attributes["device_class"] == "window"
     assert state.attributes["dahua_area"] == "Kitchen"
+
+    pircam_id = _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{HALL_PIRCAM}")
+    assert pircam_id is not None
+    pircam_state = hass.states.get(pircam_id)
+    assert pircam_state.name == "Hall PIR Camera"
 
     connection = _entity_id(hass, "binary_sensor", f"{SERIAL}_connection")
     assert hass.states.get(connection).state == "on"
@@ -164,6 +176,8 @@ async def test_platforms_create_expected_entities(hass: HomeAssistant) -> None:
     device = dr.async_get(hass).async_get_device_by_identifier(
         (DOMAIN, SERIAL), entry.entry_id
     )
+    assert device.name == "Alarm Panel"
+    assert device.model == "ARC3800H"
     assert device.configuration_url == "http://192.0.2.10"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -180,7 +194,7 @@ async def test_arm_state_entities_follow_arm_events(hass: HomeAssistant) -> None
     failure = _entity_id(hass, "sensor", f"{SERIAL}_last_arming_failure")
     # Disabled Dahua areas get no entity.
     assert _entity_id(hass, "sensor", f"{SERIAL}_area_3_arm_state") is None
-    assert garage == "sensor.arc3800h_garage_arm_state"
+    assert garage == "sensor.alarm_panel_garage_arm_state"
     assert hass.states.get(system).attributes["options"] == [
         "disarmed",
         "armed_home",
@@ -275,7 +289,7 @@ async def test_alarm_entities_follow_alarm_events(hass: HomeAssistant) -> None:
     kitchen = _entity_id(hass, "binary_sensor", f"{SERIAL}_area_1_alarm")
     garage = _entity_id(hass, "binary_sensor", f"{SERIAL}_area_2_alarm")
     assert _entity_id(hass, "binary_sensor", f"{SERIAL}_area_3_alarm") is None
-    assert garage == "binary_sensor.arc3800h_garage_alarm"
+    assert garage == "binary_sensor.alarm_panel_garage_alarm"
     assert hass.states.get(system).attributes["device_class"] == "safety"
     # Unknown until the arm state is known.
     for entity_id in (system, kitchen, garage):
@@ -527,3 +541,132 @@ async def test_diagnostics_redacts_connection_identity(hass: HomeAssistant) -> N
     assert "PIRCAM-SN-1" not in text
     assert "FOB-SN-1" not in text
     assert result["runtime"]["inventory_summary"]["exposed_alarm_inputs"] == 2
+
+
+async def test_zone_binary_sensor_naming_and_dedication(hass: HomeAssistant) -> None:
+    entry = _entry(hass, title="My Alarm System")
+    hub = make_hub()
+
+    # 1. MultiIO zone with child device: dedicated, main entity (_attr_name = None)
+    multiio_zone = Zone(
+        index=1,
+        name="Kitchen Window",
+        classification="multiio_input",
+        is_multiio=True,
+        level1=2,
+        level2=1,
+    )
+    hub.child_device_ids = {1: "child-dev-1"}
+    hub.multiio_parent_ids = {2: "parent-dev-2"}
+    info, is_dedicated = _device_info_for_zone(
+        hub, "uid", multiio_zone, default_name=entry
+    )
+    assert is_dedicated is True
+    sensor = DahuaArcZoneBinarySensor(hub, entry, multiio_zone)
+    assert sensor._attr_name is None
+
+    # 2. Radio device carrying only this single primary zone: dedicated (_attr_name = None)
+    # HALL_PIRCAM is already on level1=3 in make_hub() and is the only primary zone on level1=3.
+    hall_pircam_zone = hub.zones[HALL_PIRCAM]
+    info, is_dedicated = _device_info_for_zone(
+        hub, "uid", hall_pircam_zone, default_name=entry
+    )
+    assert is_dedicated is True
+    sensor_single = DahuaArcZoneBinarySensor(hub, entry, hall_pircam_zone)
+    assert sensor_single._attr_name is None
+
+    # Also test an added radio device on level1=5 with a single primary zone:
+    radio_single = RadioDeviceInfo(
+        level1=5,
+        alarm_index=20,
+        name="Front Door Contact",
+        sense_method="DoorContact",
+        classification="contact",
+    )
+    single_zone = Zone(
+        index=20,
+        name="Front Door Contact",
+        classification="contact",
+        is_multiio=False,
+        level1=5,
+        level2=0,
+    )
+    hub.radio_devices[5] = radio_single
+    hub.zones[20] = single_zone
+    info, is_dedicated = _device_info_for_zone(
+        hub, "uid", single_zone, default_name=entry
+    )
+    assert is_dedicated is True
+    assert info["name"] == "Front Door Contact"
+    sensor_added = DahuaArcZoneBinarySensor(hub, entry, single_zone)
+    assert sensor_added._attr_name is None
+
+    # 3. Radio device shared with multiple primary inputs: not dedicated (_attr_name = zone.name)
+    radio_shared = RadioDeviceInfo(
+        level1=4,
+        alarm_index=3,
+        name="Dual Input Board",
+        sense_method="Transmitter",
+        classification="contact",
+    )
+    shared_zone_a = Zone(
+        index=3,
+        name="Board Input 1",
+        classification="contact",
+        is_multiio=False,
+        level1=4,
+        level2=1,
+    )
+    shared_zone_b = Zone(
+        index=4,
+        name="Board Input 2",
+        classification="contact",
+        is_multiio=False,
+        level1=4,
+        level2=2,
+    )
+    hub.radio_devices[4] = radio_shared
+    hub.zones[3] = shared_zone_a
+    hub.zones[4] = shared_zone_b
+    info_a, is_dedicated_a = _device_info_for_zone(
+        hub, "uid", shared_zone_a, default_name=entry
+    )
+    info_b, is_dedicated_b = _device_info_for_zone(
+        hub, "uid", shared_zone_b, default_name=entry
+    )
+    assert is_dedicated_a is False
+    assert is_dedicated_b is False
+    assert info_a["name"] == "Dual Input Board"
+    assert info_b["name"] == "Dual Input Board"
+    sensor_a = DahuaArcZoneBinarySensor(hub, entry, shared_zone_a)
+    sensor_b = DahuaArcZoneBinarySensor(hub, entry, shared_zone_b)
+    assert sensor_a._attr_name == "Board Input 1"
+    assert sensor_b._attr_name == "Board Input 2"
+
+    # 4. Zone fallback to panel root device: not dedicated (_attr_name = zone.name)
+    root_zone = Zone(
+        index=5,
+        name="Panel Wired Loop 1",
+        classification="wired_input",
+        is_multiio=False,
+        level1=-1,
+        level2=-1,
+    )
+    hub.zones[5] = root_zone
+    info_root, is_dedicated_root = _device_info_for_zone(
+        hub, "uid", root_zone, default_name=entry
+    )
+    assert is_dedicated_root is False
+    assert info_root["name"] == "My Alarm System"
+    assert info_root["model"] == hub.device_type
+    sensor_root = DahuaArcZoneBinarySensor(hub, entry, root_zone)
+    assert sensor_root._attr_name == "Panel Wired Loop 1"
+
+    # 5. Root device naming preserves readable title or falls back to "Alarm Panel"
+    fallback_info = root_device_info(hub, "uid")
+    assert fallback_info["name"] == "Alarm Panel"
+    assert fallback_info["model"] == hub.device_type
+
+    titled_info = root_device_info(hub, "uid", entry)
+    assert titled_info["name"] == "My Alarm System"
+    assert titled_info["model"] == hub.device_type

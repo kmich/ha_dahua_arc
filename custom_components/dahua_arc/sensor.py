@@ -243,7 +243,7 @@ class DahuaArcDiagnosticSensor(DahuaArcEntity, SensorEntity):
         super().__init__(hub, entry)
         self.entity_description = description
         self._attr_unique_id = f"{self._uid}_{description.key}"
-        self._attr_device_info = root_device_info(hub, self._uid)
+        self._attr_device_info = root_device_info(hub, self._uid, entry)
 
     @property
     def native_value(self):

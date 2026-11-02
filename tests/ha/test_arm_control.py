@@ -206,9 +206,9 @@ async def test_two_areas_get_a_system_panel_and_one_per_area(
     hass: HomeAssistant,
 ) -> None:
     async with harness(hass) as h:
-        assert h.entity_id(SYSTEM_UID) == "alarm_control_panel.arc3800h"
-        assert h.entity_id(KITCHEN_UID) == "alarm_control_panel.arc3800h_kitchen"
-        assert h.entity_id(GARAGE_UID) == "alarm_control_panel.arc3800h_garage"
+        assert h.entity_id(SYSTEM_UID) == "alarm_control_panel.alarm_panel"
+        assert h.entity_id(KITCHEN_UID) == "alarm_control_panel.alarm_panel_kitchen"
+        assert h.entity_id(GARAGE_UID) == "alarm_control_panel.alarm_panel_garage"
         assert len(_all_panels(hass)) == 3
         # A disabled Dahua area has no panel.
         assert h.entity_id(f"{SERIAL}_area_3_alarm_panel") is None
@@ -223,7 +223,7 @@ async def test_two_areas_get_a_system_panel_and_one_per_area(
 
 async def test_a_single_area_gets_only_the_system_panel(hass: HomeAssistant) -> None:
     async with harness(hass, areas=1) as h:
-        assert _all_panels(hass) == ["alarm_control_panel.arc3800h"]
+        assert _all_panels(hass) == ["alarm_control_panel.alarm_panel"]
         await h.call("alarm_arm_away")
         assert h.requests() == [{"Mode": "T", "Areas": [0]}]
 
