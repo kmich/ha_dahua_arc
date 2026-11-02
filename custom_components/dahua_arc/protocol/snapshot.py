@@ -232,7 +232,7 @@ class SnapshotClient:
             # Pure JSON response?
             try:
                 obj = json.loads(payload.decode("utf-8")) if payload else {}
-            except UnicodeDecodeError, json.JSONDecodeError:
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 obj = None
 
             if isinstance(obj, dict):

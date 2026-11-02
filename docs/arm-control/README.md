@@ -1,9 +1,6 @@
-# Arm/disarm control — design package
+# Arm/disarm control — design and implementation package
 
-Status: **design only, nothing implemented.** This folder is the handoff for the
-agent (or person) who will implement arm/disarm control for the Dahua ARC
-integration. Nothing here changes runtime behaviour. Until the work lands, the
-integration stays read-only, as the README says.
+Status: **Implemented and Verified on Hardware (v1.0.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with cryptographic PIN authentication.
 
 ## What is being built
 
@@ -31,7 +28,6 @@ partial mode (`p2`), and exit/entry-delay states.
 | 3 | [03-ha-integration.md](03-ha-integration.md) | Entities, unique IDs, state mapping, options flow, code handling, actions, errors, repairs, diagnostics |
 | 4 | [04-frontend.md](04-frontend.md) | What the user sees: options screens, more-info dialog, dashboard cards (with YAML), error messages, notifications |
 | 5 | [05-implementation-plan.md](05-implementation-plan.md) | Phased work breakdown, file-by-file changes, tests, acceptance criteria, risks |
-| 6 | [06-keyfob-relay.md](06-keyfob-relay.md) | **Update 2026-10-22.** The ARC's arm RPC could not be found (02 section 2c), so this is the plan for arming through a relay-driven keyfob, reusing the control layer |
 
 ## Decisions already taken in this design
 

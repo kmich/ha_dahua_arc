@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -13,10 +14,15 @@ from typing import Any
 import pytest
 from custom_components.dahua_arc.protocol.arming import ArmingTracker
 from custom_components.dahua_arc.protocol.control import (
+    ARM_COMMAND_SPEC,
     FAKE_COMMAND_SPEC,
     ArmCommand,
     ArmController,
     CommandOutcome,
+    _alarm_region_parse_reply,
+    _build_alarm_region_params,
+    _build_config_manager_params,
+    _config_manager_parse_reply,
 )
 from custom_components.dahua_arc.protocol.inventory import (
     extract_area_zones,
@@ -64,19 +70,21 @@ class Rig:
 
         kwargs.setdefault("wait_timeout", 1.0)
         kwargs.setdefault("reply_timeout", 1.0)
+        spec = kwargs.pop("spec", FAKE_COMMAND_SPEC)
+        allow_fake = kwargs.pop("allow_fake_spec", True)
         self.controller = ArmController(
             host="192.0.2.10",
             port=5000,
             username="admin",
             password=self.password,
-            spec=FAKE_COMMAND_SPEC,
+            spec=spec,
             tracker=self.tracker,
             read_table=lambda: self.snapshot.read_config("AreaArmMode"),
             hub_available=lambda: self.available,
             auth_failed=lambda: self.auth_failed,
             on_auth_failed=on_auth_failed,
             stop_event=self.stop,
-            allow_fake_spec=True,
+            allow_fake_spec=allow_fake,
             **kwargs,
         )
         return self.controller
@@ -401,3 +409,91 @@ def test_only_the_panel_platform_executes_commands() -> None:
         if re.search(r"(?<!ArmController)\.execute\b", path.read_text(encoding="utf-8"))
     }
     assert callers == {"alarm_control_panel.py"}
+
+
+def test_arm_command_spec_is_verified() -> None:
+    assert ARM_COMMAND_SPEC is not None
+    assert ARM_COMMAND_SPEC.method == "AlarmRegion.setArmMode"
+    assert not ARM_COMMAND_SPEC.needs_instance
+
+
+def test_build_alarm_region_params() -> None:
+    cmd = ArmCommand(mode="T", areas=(0,))
+    params = _build_alarm_region_params(cmd, "pwd123")
+    assert params["mode"] == "T"
+    assert params["areas"] == [1]
+    assert base64.b64decode(params["pwd"]).decode("ascii") == "pwd123"
+
+    # User code overrides device password and area index becomes 1-based
+    cmd_code = ArmCommand(mode="D", areas=(0, 16), code="987654")
+    params_code = _build_alarm_region_params(cmd_code, "pwd123")
+    assert params_code["mode"] == "D"
+    assert params_code["areas"] == [1, 17]
+    assert base64.b64decode(params_code["pwd"]).decode("ascii") == "987654"
+
+
+def test_parse_alarm_region_reply() -> None:
+    ok_reply = {"id": 1298, "params": {"armResult": 0}, "result": True}
+    res = _alarm_region_parse_reply(ok_reply)
+    assert res.ok is True
+
+    refuse_reply = {
+        "id": 1299,
+        "params": {
+            "armResult": 1001,
+            "detail": [{"Area": 1, "AlarmSource": [150]}],
+        },
+        "result": True,
+    }
+    res_refuse = _alarm_region_parse_reply(refuse_reply)
+    assert res_refuse.ok is False
+    assert res_refuse.error_code == 1001
+    assert len(res_refuse.open_zones) == 1
+    assert res_refuse.open_zones[0] == {"area": 1, "zone": 150}
+
+
+def test_build_config_manager_params() -> None:
+    cmd = ArmCommand(mode="T", areas=(0,))
+    params = _build_config_manager_params(cmd, "pwd")
+    assert params["name"] == "AreaArmMode"
+    table = params["table"]["Areas"]
+    assert len(table) >= 1
+    assert table[0] == {"ArmTime": 0, "Mode": "T"}
+
+    # Multi-area with existing dict table
+    current = [{"ArmTime": 0, "Mode": "p1" if i == 1 else "D"} for i in range(17)]
+    cmd_multi = ArmCommand(mode="p2", areas=(0, 2))
+    params_multi = _build_config_manager_params(
+        cmd_multi,
+        "pwd",
+        current_table={"Areas": current, "SystemStatusCheck": {"Enable": True}},
+    )
+    table_multi = params_multi["table"]["Areas"]
+    assert table_multi[0] == {"ArmTime": 0, "Mode": "p2"}
+    assert table_multi[1] == {"ArmTime": 0, "Mode": "p1"}  # preserved
+    assert table_multi[2] == {"ArmTime": 0, "Mode": "p2"}
+    assert all(row["Mode"] == "D" for row in table_multi[3:])
+    assert params_multi["table"]["SystemStatusCheck"] == {"Enable": True}
+
+
+def test_parse_config_manager_reply() -> None:
+    ok_reply = {"id": 1298, "params": {"options": None}, "result": True}
+    res = _config_manager_parse_reply(ok_reply)
+    assert res.ok is True
+
+    err_reply = {
+        "id": 1299,
+        "result": False,
+        "error": {"code": 268632080, "message": "Wrong password"},
+    }
+    res_err = _config_manager_parse_reply(err_reply)
+    assert res_err.ok is False
+    assert res_err.error_code == 268632080
+
+
+def test_real_arm_command_spec_executes_against_fake_arc(rig: Rig) -> None:
+    controller = rig.build(spec=ARM_COMMAND_SPEC, allow_fake_spec=False)
+    cmd = _cmd("p1", (0,))
+    res = controller.execute(cmd)
+    assert res.outcome == CommandOutcome.CONFIRMED
+    assert "AlarmRegion.setArmMode" in rig.arc.calls

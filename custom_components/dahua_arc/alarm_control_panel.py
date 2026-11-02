@@ -3,11 +3,6 @@
 Off unless the ``enable_arm_control`` option is set and the hub has a verified
 arm command. A command's result comes from the ARC's own events, never from
 the RPC reply alone (see :mod:`.protocol.control`).
-
-With the keyfob backend (``docs/arm-control/06-keyfob-relay.md``) the command is
-a press of a relay-driven keyfob button instead of an RPC. A keyfob arms the
-areas it is assigned to in the ARC, so that backend has only the system panel,
-and disarm is available only when the user opted in.
 """
 
 from __future__ import annotations
@@ -24,7 +19,13 @@ from homeassistant.components.alarm_control_panel import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+try:
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+except ImportError:
+    from homeassistant.helpers.entity_platform import (
+        AddEntitiesCallback as AddConfigEntryEntitiesCallback,  # type: ignore[attr-defined]
+    )
 
 from . import arm_code
 from .client import ArcHub
@@ -65,8 +66,7 @@ _LOGGER = logging.getLogger(__name__)
 # it behind a slow arm would run a stale disarm or arm later.
 PARALLEL_UPDATES = 0
 HOME_ASSISTANT = "Home Assistant"
-# Panel arm mode -> the ARC mode code a keyfob button produces.
-KEYFOB_MODE = {ARM_MODE_HOME: "p1", ARM_MODE_AWAY: "T"}
+BAD_PASSWORD_CODE = 268632080  # DAHUA_ERRORS: invalid device password
 NO_PERMISSION_CODE = 268894210  # DAHUA_ERRORS: insufficient permissions
 
 _STATE_MAP = {
@@ -132,8 +132,7 @@ async def async_setup_entry(
         _LOGGER.warning("Arm control needs at least one enabled ARC area")
         return
     entities: list[DahuaArcAlarmPanel] = [DahuaArcSystemPanel(hub, entry, areas)]
-    # A keyfob arms its own set of areas, not areas one by one.
-    if len(areas) > 1 and hub.keyfob_sender is None:
+    if len(areas) > 1:
         entities.extend(DahuaArcAreaPanel(hub, entry, area) for area in areas)
     async_add_entities(entities)
 
@@ -172,9 +171,6 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         self._modes = [m for m in VERIFIED_ARM_MODES if m in modes] or list(
             DEFAULT_ARM_MODES
         )
-        if hub.keyfob_sender is not None:
-            mapped = hub.keyfob_sender.buttons.mapped_modes()
-            self._modes = [m for m in self._modes if KEYFOB_MODE.get(m) in mapped]
         self._limiter = arm_code.AttemptLimiter()
         self._last_command: dict[str, Any] | None = None
         self._ha_event_seq: int | None = None
@@ -281,10 +277,6 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         controller = self.hub.arm_control
         if not self.available or controller is None:
             raise _error("arm_unavailable")
-        keyfob = self.hub.keyfob_sender is not None
-        if disarm and keyfob and not self.hub.keyfob_allow_disarm:
-            # A relay that can disarm the house is opt-in; nothing is pressed.
-            raise _validation_error("disarm_not_enabled")
         await self._async_check_code(code, disarm=disarm)
 
         # Already there: nothing to send, so repeated calls are idempotent.
@@ -293,7 +285,12 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
 
         self._pending = "disarming" if disarm else "arming"
         self.async_write_ha_state()
-        command = ArmCommand(mode=mode, areas=self._target, origin=self._context_id())
+        command = ArmCommand(
+            mode=mode,
+            areas=self._target,
+            origin=self._context_id(),
+            code=str(code or "").strip(),
+        )
         try:
             result = await self.hass.async_add_executor_job(controller.execute, command)
         finally:
@@ -331,8 +328,6 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
                 )
             return _error("arm_refused", areas=self._area_names())
         if outcome is CommandOutcome.UNCONFIRMED:
-            if self.hub.keyfob_sender is not None:
-                return _error("arm_unconfirmed_keyfob", seconds=int(wait_timeout))
             return _error("arm_unconfirmed", seconds=int(wait_timeout))
         if outcome is CommandOutcome.AUTH_FAILED:
             return _error("arm_auth_failed")
@@ -341,19 +336,13 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
                 return _error("arm_busy")
             if reason == "unavailable":
                 return _error("arm_unavailable")
-            if reason == "relay_unavailable":
-                return _error("arm_relay_unavailable", entity=result.rpc_error_message)
-            if reason == "too_soon":
-                return _error("arm_too_soon", wait=result.rpc_error_message)
-            if reason == "mode_not_configured":
-                return _error("arm_mode_not_configured")
         if outcome is CommandOutcome.FAILED:
-            if reason == "press_failed":
-                return _error("arm_press_failed", error=result.rpc_error_message or "")
             if reason == "unloading":
                 return _error("arm_unavailable")
             if reason == "unreachable":
                 return _error("arm_unreachable", error=result.rpc_error_message or "")
+            if result.rpc_error_code == BAD_PASSWORD_CODE:
+                return _error("arm_bad_device_password")
             if result.rpc_error_code == NO_PERMISSION_CODE:
                 return _error("arm_not_permitted")
         return _error(

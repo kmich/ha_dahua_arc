@@ -571,6 +571,8 @@ def _arm_hub(*, enabled: bool, spec: bool) -> ArcHub:
 
         hub.arm_command_spec = FAKE_COMMAND_SPEC
         hub.allow_fake_arm_spec = True
+    else:
+        hub.arm_command_spec = None
     return hub
 
 

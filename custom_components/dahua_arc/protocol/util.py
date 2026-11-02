@@ -25,7 +25,7 @@ def parse_timestamp(value: str | None) -> datetime | None:
 def safe_int(value: Any, default: int | None = None) -> int | None:
     try:
         return int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 

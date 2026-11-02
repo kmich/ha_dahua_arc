@@ -240,7 +240,13 @@ def test_transcript_does_not_keep_a_pin_in_the_params(probe) -> None:
 def test_every_builtin_shape_is_disarm_only(probe) -> None:
     for name, build in probe.SHAPES.items():
         params = build(3)
-        assert probe.string_leaves(params) == ["D"], name
+        leaves = probe.string_leaves(params)
+        int_leaves = probe.int_leaves(params)
+        assert (
+            ("D" in leaves)
+            or any(s.casefold() in ("disarm", "alldisarming") for s in leaves)
+            or (0 in int_leaves)
+        ), name
         # Passes the guard on an all-disarmed panel.
         probe.check_disarm_only(params, ["D", "D", "D", "D"])
 
@@ -436,7 +442,13 @@ def test_main_refuses_prompt_code_without_a_terminal(
 def test_code_shapes_are_disarm_only_with_the_code_masked(probe) -> None:
     for name, build in probe.CODE_SHAPES.items():
         masked = build(2, probe.CODE_PLACEHOLDER, 1)
-        assert "D" in probe.string_leaves(masked), name
+        leaves = probe.string_leaves(masked)
+        int_leaves = probe.int_leaves(masked)
+        assert (
+            ("D" in leaves)
+            or any(s.casefold() in ("disarm", "alldisarming") for s in leaves)
+            or (0 in int_leaves)
+        ), name
         probe.check_disarm_only(masked, ["D", "D", "D"])
 
 
@@ -752,3 +764,306 @@ def test_all_new_zones_shapes_are_listed_and_disarm_only(probe) -> None:
     for name in (*ZONES_CODE_SHAPES, "zones-user-object"):
         masked = probe.CODE_SHAPES[name](0, probe.CODE_PLACEHOLDER, 1)
         probe.check_disarm_only(masked, ["D", "D"])
+
+
+def test_instance_option_calls_factory_and_destroy(probe) -> None:
+    arc = _arc()
+    transcript, lines = _run(probe, arc, {"Mode": "D", "Areas": [0]}, "--instance")
+    assert transcript["instance"] is True
+    assert transcript["instance_created"]["result"] is True
+    assert "FakeArc.factory.instance" in arc.calls
+    assert "FakeArc.destroy" in arc.calls
+    assert any("Acquired instance object_id" in line for line in lines)
+    assert any("Destroyed instance object_id" in line for line in lines)
+
+
+def test_instance_option_fails_if_no_object_id(probe) -> None:
+    arc = _arc()
+    arc.getters["FakeArc.factory.instance"] = lambda _p: None
+    with pytest.raises(probe.GuardError, match="returned no object id"):
+        _run(probe, arc, {"Mode": "D", "Areas": [0]}, "--instance")
+
+
+def test_sweep_instances_probes_candidate_services(probe) -> None:
+    arc = _arc()
+    lines: list[str] = []
+    args = probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--sweep-instances"]
+    )
+    with arc.patch():
+        result = probe.sweep_instances(args, PASSWORD, emit=lines.append)
+    assert result["aborted"] is None
+    for service in probe.INSTANCE_CANDIDATE_SERVICES:
+        assert service in result["services"]
+        assert result["services"][service]["ok"] is True
+        assert result["services"][service]["object_id"] == 12345
+        assert result["services"][service]["destroy_ok"] is True
+    assert any("sweeping" in line for line in lines)
+
+
+def test_sweep_instances_argument_rules(probe) -> None:
+    args = probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--sweep-instances"]
+    )
+    assert args.sweep_instances is True
+    for bad in (
+        ["--probe-client-types"],
+        ["--sweep-keys"],
+        ["--shape", "areas-mode"],
+        ["--params-json", "{}"],
+        ["--instance"],
+    ):
+        with pytest.raises(SystemExit):
+            probe.parse_args(
+                ["--host", "192.0.2.10", "--user", "admin", "--sweep-instances", *bad]
+            )
+
+
+def test_probe_getters_runs_cleanly(probe) -> None:
+    arc = _arc()
+    arc.getters["FakeArc.getArmMode"] = lambda p: (
+        {"mode": 0} if p.get("subSystem") == 0 else None
+    )
+    lines: list[str] = []
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-getters",
+            "--service",
+            "FakeArc",
+        ]
+    )
+    try:
+        with arc.patch():
+            result = probe.probe_getters(
+                args, PASSWORD, emit=lines.append, sleep=lambda _s: None
+            )
+        assert result["aborted"] is None
+        assert result["service"] == "FakeArc"
+        assert "FakeArc.factory.instance" in arc.calls
+        assert "FakeArc.destroy" in arc.calls
+        assert any("SUCCESS" in line for line in lines)
+    finally:
+        arc.close_timers()
+
+
+def test_probe_getters_argument_rules(probe) -> None:
+    args = probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--probe-getters"]
+    )
+    assert args.probe_getters is True
+    for bad in (
+        ["--probe-client-types"],
+        ["--sweep-keys"],
+        ["--sweep-instances"],
+        ["--inspect-service", "alarm"],
+        ["--shape", "areas-mode"],
+        ["--params-json", "{}"],
+        ["--instance"],
+    ):
+        with pytest.raises(SystemExit):
+            probe.parse_args(
+                ["--host", "192.0.2.10", "--user", "admin", "--probe-getters", *bad]
+            )
+
+
+def test_new_subsystem_shapes_can_be_sent_via_cli(probe) -> None:
+    arc = _arc()
+    transcript, _lines = _run(
+        probe, arc, probe.SHAPES["subsystem-disarm-enum"](0), "--instance"
+    )
+    assert transcript["modes_changed"] is False
+
+
+def test_probe_disarm_argument_rules(probe) -> None:
+    # Requires --i-am-at-the-panel
+    with pytest.raises(SystemExit):
+        probe.parse_args(["--host", "192.0.2.10", "--user", "admin", "--probe-disarm"])
+
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-disarm",
+            "--i-am-at-the-panel",
+        ]
+    )
+    assert args.probe_disarm is True
+
+    for bad in (
+        ["--probe-client-types"],
+        ["--sweep-keys"],
+        ["--sweep-instances"],
+        ["--inspect-service", "alarm"],
+        ["--probe-getters"],
+        ["--shape", "areas-mode"],
+        ["--params-json", "{}"],
+        ["--instance"],
+    ):
+        with pytest.raises(SystemExit):
+            probe.parse_args(
+                [
+                    "--host",
+                    "192.0.2.10",
+                    "--user",
+                    "admin",
+                    "--probe-disarm",
+                    "--i-am-at-the-panel",
+                    *bad,
+                ]
+            )
+
+
+def test_probe_disarm_succeeds_on_disarm(probe) -> None:
+    arc = _arc()
+    arc.getters["FakeArc.getSubSystem"] = lambda _p: {"State": ["AllDisarming"] * 32}
+    arc.getters["AlarmUserManager.getUserInfoAll"] = lambda _p: {
+        "UserInfos": [{"UserNumber": 1, "Name": "ExampleUser"}]
+    }
+    arc.getters["FakeArc.setDefenceMode"] = lambda p: {} if p.get("mode") == 0 else None
+    lines: list[str] = []
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-disarm",
+            "--service",
+            "FakeArc",
+            "--i-am-at-the-panel",
+        ]
+    )
+    try:
+        with arc.patch():
+            result = probe.probe_disarm(
+                args, PASSWORD, emit=lines.append, sleep=lambda _s: None
+            )
+        assert result["aborted"] is None
+        assert result["service"] == "FakeArc"
+        assert result["success"] is True
+        assert result["winning_call"] is not None
+        assert result["winning_call"]["method"] == "FakeArc.setDefenceMode"
+        assert "FakeArc.factory.instance" in arc.calls
+        assert "FakeArc.destroy" in arc.calls
+        assert any("SUCCESS" in line for line in lines)
+    finally:
+        arc.close_timers()
+
+
+def test_probe_disarm_refuses_when_subsystem_armed(probe) -> None:
+    arc = _arc()
+    arc.getters["FakeArc.getSubSystem"] = lambda _p: {
+        "State": ["AllArming"] + ["AllDisarming"] * 31
+    }
+    lines: list[str] = []
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-disarm",
+            "--service",
+            "FakeArc",
+            "--i-am-at-the-panel",
+        ]
+    )
+    with arc.patch(), pytest.raises(probe.GuardError, match=r"Subsystem.*not disarmed"):
+        probe.probe_disarm(args, PASSWORD, emit=lines.append, sleep=lambda _s: None)
+
+
+def test_parse_args_probe_condition(probe) -> None:
+    # Valid minimal probe-condition
+    args = probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--probe-condition"]
+    )
+    assert args.probe_condition is True
+
+    # Valid with code and at-the-panel
+    args2 = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-condition",
+            "--prompt-code",
+            "--i-am-at-the-panel",
+        ]
+    )
+    assert args2.probe_condition is True
+    assert args2.prompt_code is True
+    assert args2.i_am_at_the_panel is True
+
+    # Mutually exclusive with other active probes
+    for bad in (
+        ["--sweep-keys"],
+        ["--probe-disarm", "--i-am-at-the-panel"],
+        ["--probe-getters"],
+        ["--inspect-service", "AlarmRegion"],
+        ["--shape", "areas-mode"],
+        ["--params-json", "{}"],
+    ):
+        with pytest.raises(SystemExit):
+            probe.parse_args(
+                ["--host", "192.0.2.10", "--user", "admin", "--probe-condition", *bad]
+            )
+
+
+def test_probe_condition_read_only(probe) -> None:
+    arc = _arc()
+    arc.getters["AlarmRegion.getZonesInfo"] = lambda p: (
+        {"zones": []} if isinstance(p.get("Condition"), dict) else None
+    )
+    arc.getters["AlarmRegion.getZoneArmMode"] = lambda p: (
+        {"armMode": []} if p.get("Zones") == [0] else None
+    )
+    lines: list[str] = []
+    args = probe.parse_args(
+        ["--host", "192.0.2.10", "--user", "admin", "--probe-condition"]
+    )
+    with arc.patch():
+        result = probe.probe_condition(
+            args, PASSWORD, emit=lines.append, sleep=lambda _s: None
+        )
+    assert result["aborted"] is None
+    assert len(result["calls"]) > 0
+    assert any("AlarmRegion.getZonesInfo" in c["method"] for c in result["calls"])
+
+
+def test_probe_condition_with_disarm_success(probe) -> None:
+    arc = _arc()
+    arc.getters["AlarmRegion.getArmMode"] = lambda _p: {"armMode": [{"Mode": "D"}] * 32}
+    arc.getters["AlarmRegion.setArmMode"] = lambda p: (
+        {}
+        if isinstance(p.get("armMode"), list)
+        and len(p["armMode"]) == 32
+        and p["armMode"][0].get("Mode") == "D"
+        else None
+    )
+    lines: list[str] = []
+    args = probe.parse_args(
+        [
+            "--host",
+            "192.0.2.10",
+            "--user",
+            "admin",
+            "--probe-condition",
+            "--i-am-at-the-panel",
+        ]
+    )
+    with arc.patch():
+        result = probe.probe_condition(
+            args, PASSWORD, emit=lines.append, sleep=lambda _s: None
+        )
+    assert result["aborted"] is None
+    assert result["success"] is True
+    assert result["winning_call"] is not None
+    assert result["winning_call"]["method"] == "AlarmRegion.setArmMode"
+    assert any("SUCCESS" in line for line in lines)

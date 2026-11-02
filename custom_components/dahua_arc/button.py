@@ -11,7 +11,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+try:
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+except ImportError:
+    from homeassistant.helpers.entity_platform import (
+        AddEntitiesCallback as AddConfigEntryEntitiesCallback,  # type: ignore[attr-defined]
+    )
 
 from .client import ArcHub, Zone
 from .const import CONF_ENABLE_RESEARCH_FEATURES, DEFAULT_ENABLE_RESEARCH_FEATURES

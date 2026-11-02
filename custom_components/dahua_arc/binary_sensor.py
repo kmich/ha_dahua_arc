@@ -8,9 +8,20 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import ChildDeviceInfo, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
+
+try:
+    from homeassistant.helpers.device_registry import ChildDeviceInfo
+except ImportError:
+    ChildDeviceInfo = DeviceInfo  # type: ignore[misc,assignment]
 from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+try:
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+except ImportError:
+    from homeassistant.helpers.entity_platform import (
+        AddEntitiesCallback as AddConfigEntryEntitiesCallback,  # type: ignore[attr-defined]
+    )
 
 from .client import ArcHub, RadioDeviceInfo, Zone
 from .const import DOMAIN

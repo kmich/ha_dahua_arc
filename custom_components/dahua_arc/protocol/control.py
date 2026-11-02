@@ -11,11 +11,6 @@ system, and a repeated disarm or arm would not be safe. The outcome comes from
 the ARC's ``AreaArmModeChange`` / ``ArmingFailure`` events, falling back to one
 read of the ``AreaArmMode`` table.
 
-A command can also be issued by a :class:`CommandSender` instead of an RPC (for
-example a relay pressing a paired keyfob, see ``protocol/keyfob.py``). The
-confirmation from the ARC's events is identical, and a sender is never retried
-either.
-
 The RPC itself is described by a :class:`CommandSpec`. The real spec,
 :data:`ARM_COMMAND_SPEC`, stays ``None`` until its method name and parameter
 shape are verified on hardware (see ``docs/arm-control/02-protocol.md``).
@@ -24,6 +19,7 @@ Tests use :data:`FAKE_COMMAND_SPEC`, which is refused outside tests.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import threading
@@ -31,7 +27,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple
 
 from ..vendor.dahua import DHIPTransport, const
 from ..vendor.dahua.exceptions import LoginError
@@ -71,6 +67,8 @@ class ArmCommand:
     force: bool = False
     # Home Assistant context id, kept for diagnostics and never sent.
     origin: str = ""
+    # Optional keypad code or PIN; never serialized or stored in diagnostics history.
+    code: str = ""
 
 
 @dataclass(slots=True)
@@ -86,7 +84,7 @@ class CommandResult:
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Diagnostics form: the command's shape, never request parameters."""
+        """Diagnostics form: the command's shape, never request parameters or code."""
         return {
             "outcome": self.outcome.value,
             "mode": self.command.mode,
@@ -122,32 +120,6 @@ class CommandSpec:
     parse_reply: Callable[[dict[str, Any]], ReplyResult]
 
 
-@dataclass(frozen=True, slots=True)
-class SendFailure:
-    """A :class:`CommandSender` could not issue (or may not have issued) a command.
-
-    ``issued`` is True when the command may already have taken effect, so the
-    result is ``FAILED`` and the command is never repeated; False means nothing
-    was done and the result is ``REJECTED``.
-    """
-
-    reason: str
-    message: str | None = None
-    issued: bool = False
-
-
-class CommandSender(Protocol):
-    """Issues one command by some means other than a DHIP RPC. Never retries."""
-
-    name: str
-
-    def send(self, command: ArmCommand) -> SendFailure | None:
-        """Issue ``command``: ``None`` when issued, else why it was not."""
-
-    def describe(self) -> dict[str, Any]:
-        """Redacted facts for diagnostics."""
-
-
 def error_fields(reply: dict[str, Any]) -> tuple[int | None, str | None]:
     error = reply.get("error")
     if not isinstance(error, dict):
@@ -161,7 +133,10 @@ def error_fields(reply: dict[str, Any]) -> tuple[int | None, str | None]:
 
 
 def _fake_build_params(command: ArmCommand, password: str) -> dict[str, Any]:
-    return {"Mode": command.mode, "Areas": list(command.areas)}
+    params: dict[str, Any] = {"Mode": command.mode, "Areas": list(command.areas)}
+    if command.code:
+        params["Password"] = command.code
+    return params
 
 
 def _fake_parse_reply(reply: dict[str, Any]) -> ReplyResult:
@@ -183,9 +158,126 @@ FAKE_COMMAND_SPEC = CommandSpec(
     parse_reply=_fake_parse_reply,
 )
 
-# Filled in from the Phase 0 evidence table. Until then no real arm command
-# exists and the integration cannot send one.
-ARM_COMMAND_SPEC: CommandSpec | None = None
+
+def _build_config_manager_params(
+    command: ArmCommand,
+    password: str,
+    current_table: dict[str, Any] | list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the configManager.setConfig payload targeting AreaArmMode.
+
+    Verified on Dahua ARC3800H hardware.
+    The table is a dictionary containing an ``Areas`` list and ``SystemStatusCheck``.
+    Target areas are updated with ``command.mode`` while non-target areas
+    and system status settings retain their current state.
+    """
+    if isinstance(current_table, dict):
+        new_table = dict(current_table)
+        areas_raw = current_table.get("Areas")
+        if isinstance(areas_raw, list):
+            new_areas = [
+                {"ArmTime": row.get("ArmTime", 0), "Mode": row.get("Mode", "D")}
+                for row in areas_raw
+                if isinstance(row, dict)
+            ]
+        else:
+            new_areas = []
+    elif isinstance(current_table, list):
+        new_table = {}
+        new_areas = [
+            {"ArmTime": row.get("ArmTime", 0), "Mode": row.get("Mode", "D")}
+            for row in current_table
+            if isinstance(row, dict)
+        ]
+    else:
+        new_table = {}
+        new_areas = []
+
+    target_max = max(command.areas, default=0)
+    while len(new_areas) <= target_max:
+        new_areas.append({"ArmTime": 0, "Mode": "D"})
+
+    for area in command.areas:
+        new_areas[area]["Mode"] = command.mode
+
+    new_table["Areas"] = new_areas
+    return {"name": "AreaArmMode", "table": new_table}
+
+
+def _config_manager_parse_reply(reply: dict[str, Any]) -> ReplyResult:
+    """Parse the configManager.setConfig reply."""
+    if reply.get("result"):
+        return ReplyResult(True)
+    code, message = error_fields(reply)
+    error = reply.get("error")
+    data = error.get("data") if isinstance(error, dict) else None
+    zones = parse_abnormal_zones(data) if isinstance(data, dict) else []
+    return ReplyResult(False, code, message, zones)
+
+
+# Legacy configManager.setConfig specification targeting AreaArmMode.
+CONFIG_MANAGER_COMMAND_SPEC: CommandSpec = CommandSpec(
+    method="configManager.setConfig",
+    needs_instance=False,
+    build_params=_build_config_manager_params,
+    parse_reply=_config_manager_parse_reply,
+)
+
+
+def _build_alarm_region_params(
+    command: ArmCommand,
+    password: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build the AlarmRegion.setArmMode payload for Dahua ARC hardware.
+
+    AlarmRegion.setArmMode is the operational keypad-emulating arm/disarm command.
+    Parameters:
+    - 'pwd': base64-encoded user PIN or device password.
+    - 'mode': arm mode string ('D', 'p1', 'T', 'p2').
+    - 'areas': 1-based area indexes (1..32).
+    """
+    pin = command.code or password
+    b64_pwd = base64.b64encode(pin.encode("utf-8")).decode("ascii")
+    areas_1based = [a + 1 for a in sorted(command.areas)]
+    return {
+        "pwd": b64_pwd,
+        "mode": command.mode,
+        "areas": areas_1based,
+    }
+
+
+def _alarm_region_parse_reply(reply: dict[str, Any]) -> ReplyResult:
+    """Parse the AlarmRegion.setArmMode reply."""
+    if reply.get("result"):
+        params = reply.get("params") or {}
+        arm_result = params.get("armResult", 0)
+        if arm_result == 0:
+            return ReplyResult(True)
+        detail = params.get("detail") or []
+        open_zones: list[dict[str, Any]] = []
+        for item in detail:
+            if isinstance(item, dict):
+                area = item.get("Area")
+                for src in item.get("AlarmSource") or []:
+                    open_zones.append({"area": area, "zone": src})
+        return ReplyResult(
+            False,
+            error_code=arm_result,
+            error_message=f"Arm refused (armResult {arm_result})",
+            open_zones=open_zones,
+        )
+    code, message = error_fields(reply)
+    return ReplyResult(False, code, message)
+
+
+# Verified operational keypad-emulating arm/disarm command for Dahua ARC3800H.
+ARM_COMMAND_SPEC: CommandSpec = CommandSpec(
+    method="AlarmRegion.setArmMode",
+    needs_instance=False,
+    build_params=_build_alarm_region_params,
+    parse_reply=_alarm_region_parse_reply,
+)
 
 
 def _object_id(reply: dict[str, Any]) -> int | None:
@@ -199,7 +291,7 @@ def _object_id(reply: dict[str, Any]) -> int | None:
             continue
         try:
             obj = int(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if obj > 0:
             return obj
@@ -227,14 +319,12 @@ class ArmController:
         reply_timeout: float = REPLY_TIMEOUT_SECONDS,
         allow_fake_spec: bool = False,
         spec: CommandSpec | None = None,
-        sender: CommandSender | None = None,
     ) -> None:
-        if (spec is None) == (sender is None):
-            raise ValueError("Give the controller exactly one of spec or sender")
+        if spec is None:
+            raise ValueError("Give the controller a CommandSpec")
         if spec is FAKE_COMMAND_SPEC and not allow_fake_spec:
             raise ValueError("The fake arm command spec is for tests only")
         self.spec = spec
-        self.sender = sender
         self.tracker = tracker
         self.wait_timeout = wait_timeout
         self.reply_timeout = reply_timeout
@@ -287,7 +377,6 @@ class ArmController:
     def diagnostics(self) -> dict[str, Any]:
         return {
             "command_spec": self.spec.method if self.spec else None,
-            "sender": self.sender.describe() if self.sender else None,
             "in_flight": self.in_flight,
             "history": self.history(),
         }
@@ -306,8 +395,11 @@ class ArmController:
         open_zones: list[dict[str, Any]] | None = None,
         confirmed_by: Literal["event", "table"] | None = None,
     ) -> CommandResult:
-        if message and self._password:
-            message = message.replace(self._password, "***")
+        if message:
+            if self._password:
+                message = message.replace(self._password, "***")
+            if command.code:
+                message = message.replace(command.code, "***")
         return CommandResult(
             outcome=outcome,
             command=command,
@@ -362,8 +454,6 @@ class ArmController:
             return reject("unavailable")
 
         mark = self.tracker.outcome_mark()
-        if self.sender is not None:
-            return self._issue_with_sender(self.sender, command, started, mark)
         reply = self._send(command, started)
         if isinstance(reply, CommandResult):
             return reply
@@ -380,30 +470,6 @@ class ArmController:
                 code=parsed.error_code,
                 message=parsed.error_message,
                 open_zones=list(parsed.open_zones),
-            )
-        return self._confirm(command, started, mark)
-
-    def _issue_with_sender(
-        self,
-        sender: CommandSender,
-        command: ArmCommand,
-        started: str,
-        mark: OutcomeMark,
-    ) -> CommandResult:
-        """Issue the one command through the sender, then confirm from events."""
-        try:
-            failure = sender.send(command)
-        except Exception as exc:
-            # The command may have been issued before the error: never repeat.
-            failure = SendFailure(
-                "press_failed", f"{type(exc).__name__}: {exc}", issued=True
-            )
-        if failure is not None:
-            outcome = (
-                CommandOutcome.FAILED if failure.issued else CommandOutcome.REJECTED
-            )
-            return self._result(
-                outcome, command, started, failure.reason, message=failure.message
             )
         return self._confirm(command, started, mark)
 
@@ -436,8 +502,49 @@ class ArmController:
                         code=code,
                         message=message,
                     )
-            params = self.spec.build_params(command, self._password)
-            return transport.call(self.spec.method, params, object_id=object_id)
+            current_table: dict[str, Any] | None = None
+            if self.spec.method == "configManager.setConfig":
+                try:
+                    cfg_reply = transport.call(
+                        "configManager.getConfig",
+                        {"name": "AreaArmMode"},
+                        fragmented=True,
+                    )
+                    if cfg_reply.get("result"):
+                        tbl = (cfg_reply.get("params") or {}).get("table")
+                        if isinstance(tbl, dict):
+                            current_table = tbl
+                        elif isinstance(tbl, list):
+                            current_table = {"Areas": tbl}
+                except Exception as exc:
+                    _LOGGER.debug("Could not pre-fetch AreaArmMode table: %s", exc)
+                if current_table is None:
+                    max_idx = max(command.areas, default=0)
+                    needed = max(len(self.tracker.areas), max_idx + 1)
+                    areas_list = [
+                        {"ArmTime": 0, "Mode": self.tracker.areas[i].raw_mode or "D"}
+                        if i in self.tracker.areas
+                        else {"ArmTime": 0, "Mode": "D"}
+                        for i in range(needed)
+                    ]
+                    current_table = {"Areas": areas_list}
+
+            try:
+                params = self.spec.build_params(
+                    command,
+                    self._password,
+                    current_table=current_table,
+                )
+            except TypeError:
+                params = self.spec.build_params(command, self._password)
+
+            fragmented = self.spec.method == "configManager.setConfig"
+            return transport.call(
+                self.spec.method,
+                params,
+                object_id=object_id,
+                fragmented=fragmented,
+            )
         except Exception as exc:
             # Before the write nothing happened; after it the command may have
             # taken effect. Either way: report, never resend.

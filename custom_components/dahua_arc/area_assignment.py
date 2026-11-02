@@ -25,7 +25,7 @@ def decide_zone_areas(
     for item in items:
         try:
             index = str(int(item["index"]))
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             continue
         if index in decisions:
             continue

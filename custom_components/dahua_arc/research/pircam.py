@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -28,12 +29,14 @@ class PirCamMedia:
         zones: dict[int, Zone],
         snapshot_client: SnapshotClient | None,
         notify: Callable[[set[int] | None], None],
+        storage_dir: str | None = None,
     ) -> None:
         self.host, self.http_port = host, http_port
         self.username, self.password = username, password
         self.zones = zones
         self.snapshot_client = snapshot_client
         self._notify = notify
+        self.storage_dir = storage_dir
         self.lock = threading.RLock()
         # Latest PIR-camera snapshot metadata, keyed by Alarm[] index.
         # Populated from ManualTest / SpecialFileDelayUpload events.
@@ -41,6 +44,44 @@ class PirCamMedia:
         # Last successfully retrieved JPEG, kept in memory because ARC
         # /var/tmp files are short-lived.
         self._image_cache: dict[int, bytes] = {}
+        # Raw alarm media cache (JPEG, MP4, etc.)
+        self._media_cache: dict[int, bytes] = {}
+        self._load_cached_images()
+
+    def _cache_path(self, index: int) -> str | None:
+        if not self.storage_dir:
+            return None
+        safe_host = self.host.replace(":", "_").replace("/", "_")
+        return os.path.join(
+            self.storage_dir, f"dahua_arc_pircam_{safe_host}_{index}.jpg"
+        )
+
+    def _load_cached_images(self) -> None:
+        if not self.storage_dir:
+            return
+        for idx in self.zones:
+            path = self._cache_path(idx)
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                if is_jpeg(data):
+                    self._image_cache[idx] = data
+            except Exception:
+                pass
+
+    def _save_cached_image(self, index: int, raw: bytes) -> None:
+        self._image_cache[index] = raw
+        if not self.storage_dir:
+            return
+        path = self._cache_path(index)
+        if path:
+            try:
+                with open(path, "wb") as f:
+                    f.write(raw)
+            except Exception:
+                pass
 
     def process_event(self, event: dict[str, Any]) -> None:
         with self.lock:
@@ -195,33 +236,61 @@ class PirCamMedia:
         HTTP is retained only as a fallback for firmware variants that expose
         the persistent backup path directly.
         """
+        cached = self._image_cache.get(index)
         item = self.snapshots.get(index)
         if not item:
-            return None
+            return cached
 
         expected = safe_int(item.get("expected_length"))
-        candidates: list[tuple[str, str]] = []
+        candidates: list[tuple[str, str, int | None]] = []
         temp_path = str(item.get("temp_path") or "")
         file_path = str(item.get("file_path") or "")
+        alarm_temp = str(item.get("last_alarm_temp_path") or "")
+        alarm_file = str(item.get("last_alarm_file_path") or "")
+
         if temp_path.startswith("/"):
-            candidates.append(("dhip-temp", temp_path))
+            candidates.append(("dhip-temp", temp_path, expected))
         if file_path.startswith("/") and file_path != temp_path:
-            candidates.append(("dhip-backup", file_path))
+            candidates.append(("dhip-backup", file_path, expected))
+        if alarm_temp.startswith("/") and alarm_temp not in (temp_path, file_path):
+            candidates.append(
+                (
+                    "dhip-alarm-temp",
+                    alarm_temp,
+                    safe_int(item.get("last_alarm_expected_length")),
+                )
+            )
+        if alarm_file.startswith("/") and alarm_file not in (
+            temp_path,
+            file_path,
+            alarm_temp,
+        ):
+            candidates.append(
+                (
+                    "dhip-alarm-backup",
+                    alarm_file,
+                    safe_int(item.get("last_alarm_expected_length")),
+                )
+            )
 
         errors: list[str] = []
 
         # Primary method: Dahua's local DHIP FileManager.downloadFile.
         if self.snapshot_client is not None:
-            for method_name, remote_path in candidates:
+            for method_name, remote_path, cand_expected in candidates:
                 try:
                     raw = self.snapshot_client.download_file(
                         remote_path,
-                        expected_length=expected,
+                        expected_length=cand_expected,
                         timeout=20.0,
                     )
                     if not raw:
                         errors.append(f"{method_name}: empty response")
                         continue
+
+                    self._media_cache[index] = raw
+                    item["last_media_cached_path"] = remote_path
+                    item["last_media_cached_bytes"] = len(raw)
 
                     jpeg, payload_debug = extract_embedded_jpeg(raw)
                     item["last_payload_debug"] = payload_debug
@@ -240,9 +309,11 @@ class PirCamMedia:
                     item["last_fetch_at"] = timestamp()
                     item["last_fetch_error"] = None
                     item["last_fetch_fallback"] = None
-                    self._image_cache[index] = raw
-                    if expected and expected != len(raw):
-                        item["length_mismatch"] = f"expected={expected}, got={len(raw)}"
+                    self._save_cached_image(index, raw)
+                    if cand_expected and cand_expected != len(raw):
+                        item["length_mismatch"] = (
+                            f"expected={cand_expected}, got={len(raw)}"
+                        )
                     else:
                         item["length_mismatch"] = None
                     return raw
@@ -266,7 +337,7 @@ class PirCamMedia:
                     item["last_fetch_at"] = timestamp()
                     item["last_fetch_error"] = None
                     item["last_fetch_fallback"] = None
-                    self._image_cache[index] = raw
+                    self._save_cached_image(index, raw)
                     item["length_mismatch"] = (
                         f"expected={expected}, got={len(raw)}"
                         if expected and expected != len(raw)
@@ -291,3 +362,8 @@ class PirCamMedia:
 
         item["last_fetch_fallback"] = None
         return None
+
+    def fetch_media(self, index: int) -> bytes | None:
+        """Return the latest cached media bytes (JPEG or MP4) for this PIRCam."""
+        with self.lock:
+            return self._media_cache.get(index) or self._image_cache.get(index)

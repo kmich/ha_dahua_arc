@@ -172,6 +172,7 @@ async def test_options_flow_defaults_research_off(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], BEHAVIOR
     )
+    await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_ENABLE_RESEARCH_FEATURES] is False
 
@@ -261,6 +262,7 @@ async def test_options_area_match_keeps_existing_decisions_by_default(
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"confirm": True}
         )
+        await hass.async_block_till_done()
         assert result["type"] is FlowResultType.CREATE_ENTRY
         return result["data"]
 
@@ -323,6 +325,7 @@ async def test_options_offer_arm_control_off_by_default(hass: HomeAssistant) -> 
     result = await hass.config_entries.options.async_configure(
         form["flow_id"], BEHAVIOR
     )
+    await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["enable_arm_control"] is False
     assert "arm_code_hash" not in result["data"]
@@ -357,6 +360,7 @@ async def test_the_code_is_stored_only_as_a_hash(hass: HomeAssistant) -> None:
         result["flow_id"],
         {**ARM_FORM, "arm_code": "4321", "acknowledge_control": True},
     )
+    await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     data = result["data"]
     stored = data["arm_code_hash"]
@@ -383,6 +387,7 @@ async def test_setting_a_code_clears_the_no_code_acknowledgement(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {**ARM_FORM, "arm_code": "4321"}
     )
+    await hass.async_block_till_done()
     assert "arm_code_ack_no_code" not in result["data"]
 
 
@@ -407,12 +412,14 @@ async def test_blank_code_keeps_the_hash_and_clear_removes_it(
     kept = await hass.config_entries.options.async_configure(
         result["flow_id"], ARM_FORM
     )
+    await hass.async_block_till_done()
     assert kept["data"]["arm_code_hash"] == stored
 
     result = await _to_arm_step(hass, entry)
     cleared = await hass.config_entries.options.async_configure(
         result["flow_id"], {**ARM_FORM, "clear_arm_code": True}
     )
+    await hass.async_block_till_done()
     assert "arm_code_hash" not in cleared["data"]
 
 
@@ -425,6 +432,7 @@ async def test_turning_arm_control_off_skips_its_screen(hass: HomeAssistant) -> 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {**BEHAVIOR, "enable_arm_control": False}
     )
+    await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["enable_arm_control"] is False
 
