@@ -32,8 +32,6 @@ from .const import (
     CONF_ENABLE_ARM_CONTROL,
     CONF_ENABLE_RESEARCH_FEATURES,
     CONF_HTTP_PORT,
-    CONF_KEYFOB_ALLOW_DISARM,
-    CONF_KEYFOB_WAIT_SECONDS,
     CONF_PERIODIC_RESYNC,
     CONF_ZONE_AREA_DECISIONS,
     CONF_ZONE_AREA_OWNERSHIP,
@@ -43,25 +41,17 @@ from .const import (
     DEFAULT_ENABLE_ARM_CONTROL,
     DEFAULT_ENABLE_RESEARCH_FEATURES,
     DEFAULT_HTTP_PORT,
-    DEFAULT_KEYFOB_ALLOW_DISARM,
-    DEFAULT_KEYFOB_WAIT_SECONDS,
     DEFAULT_PERIODIC_RESYNC,
     DOMAIN,
     ISSUE_ARM_CONTROL_UNSUPPORTED,
     ISSUE_ARM_CONTROL_WITHOUT_CODE,
     ISSUE_INVENTORY_ERROR,
-    ISSUE_KEYFOB_ENTITY_MISSING,
     ISSUE_NO_PRIMARY_ZONES,
     ISSUE_RESEARCH_ENABLED,
     ISSUE_SERIAL_MISMATCH,
     PLATFORMS,
 )
 from .entity import radio_identifier
-from .keyfob_bridge import (
-    build_sender,
-    configured_entities,
-    keyfob_enabled,
-)
 from .protocol.inventory import record_is_peripheral_or_placeholder
 from .vendor.dahua.exceptions import LoginError
 
@@ -77,7 +67,11 @@ def _register_radio_devices(
     registry = dr.async_get(hass)
     created: dict[int, dr.DeviceEntry] = {}
 
-    root = registry.async_get_device_by_identifier((DOMAIN, uid), entry.entry_id)
+    get_device = getattr(registry, "async_get_device_by_identifier", None)
+    if get_device is not None:
+        root = get_device((DOMAIN, uid), entry.entry_id)
+    else:
+        root = registry.async_get_device(identifiers={(DOMAIN, uid)})
     if root is None:
         raise RuntimeError("Dahua ARC root device is not registered")
 
@@ -261,7 +255,10 @@ def _apply_child_areas(
         ):
             continue
         if child.area_id != target:
-            registry.async_update_child_device(child.id, area_id=target)
+            update_child = getattr(
+                registry, "async_update_child_device", registry.async_update_device
+            )
+            update_child(child.id, area_id=target)
         if owned != {"device_id": child.id, "area_id": target}:
             ownership[key] = {"device_id": child.id, "area_id": target}
             changed = True
@@ -339,18 +336,6 @@ def _entry_issue_id(entry: DahuaArcConfigEntry, suffix: str) -> str:
     return f"{entry.entry_id}_{suffix}"
 
 
-def _missing_keyfob_entities(
-    hass: HomeAssistant, entry: DahuaArcConfigEntry
-) -> list[str]:
-    """Configured relay entities that neither exist nor are registered."""
-    registry = er.async_get(hass)
-    return [
-        entity_id
-        for entity_id in configured_entities(entry.options)
-        if hass.states.get(entity_id) is None and registry.async_get(entity_id) is None
-    ]
-
-
 def _update_repair_issues(
     hass: HomeAssistant, entry: DahuaArcConfigEntry, hub: ArcHub
 ) -> None:
@@ -388,23 +373,6 @@ def _update_repair_issues(
         )
     else:
         ir.async_delete_issue(hass, DOMAIN, unsupported_id)
-    keyfob_missing_id = _entry_issue_id(entry, ISSUE_KEYFOB_ENTITY_MISSING)
-    missing = (
-        _missing_keyfob_entities(hass, entry) if keyfob_enabled(entry.options) else []
-    )
-    if missing:
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            keyfob_missing_id,
-            is_fixable=False,
-            is_persistent=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key=ISSUE_KEYFOB_ENTITY_MISSING,
-            translation_placeholders={"entities": ", ".join(missing)},
-        )
-    else:
-        ir.async_delete_issue(hass, DOMAIN, keyfob_missing_id)
     if (
         arm_enabled
         and hub.arm_control is not None
@@ -474,18 +442,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaArcConfigEntry) -> 
         enable_arm_control=entry.options.get(
             CONF_ENABLE_ARM_CONTROL, DEFAULT_ENABLE_ARM_CONTROL
         ),
+        storage_dir=hass.config.path(".storage"),
     )
-    sender = build_sender(hass, entry.options)
-    if sender is not None:
-        hub.configure_keyfob(
-            sender,
-            wait_seconds=float(
-                entry.options.get(CONF_KEYFOB_WAIT_SECONDS, DEFAULT_KEYFOB_WAIT_SECONDS)
-            ),
-            allow_disarm=bool(
-                entry.options.get(CONF_KEYFOB_ALLOW_DISARM, DEFAULT_KEYFOB_ALLOW_DISARM)
-            ),
-        )
     try:
         await hass.async_add_executor_job(hub.start)
     except LoginError as exc:

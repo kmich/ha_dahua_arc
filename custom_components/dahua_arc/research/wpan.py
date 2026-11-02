@@ -244,7 +244,10 @@ class WPANResearchPoller:
         }
 
         for idx, zone in self.zones.items():
-            if zone.sense_method != "PIRCam":
+            if zone.classification != "motion" and zone.sense_method not in (
+                "PIRCam",
+                "PassiveInfrared",
+            ):
                 continue
             item = by_name.get(zone.name)
             if not isinstance(item, dict):
@@ -377,7 +380,10 @@ class WPANResearchPoller:
             return
 
         for idx, zone in self.zones.items():
-            if zone.sense_method != "PIRCam":
+            if zone.classification != "motion" and zone.sense_method not in (
+                "PIRCam",
+                "PassiveInfrared",
+            ):
                 continue
 
             addr = int(zone.level1 or 0)

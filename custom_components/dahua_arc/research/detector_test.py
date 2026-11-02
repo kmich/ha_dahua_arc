@@ -22,11 +22,17 @@ PAYLOAD_STYLES = ("InfoPascal", "InfoSdkNames", "StuInfoSdkNames")
 
 
 def detector_test_targets(zones: dict[int, Zone]) -> dict[int, Zone]:
-    """Every configured PIR camera with a wireless short address."""
+    """Every configured wireless motion detector with a wireless short address."""
     return {
         idx: zone
         for idx, zone in zones.items()
-        if zone.sense_method == "PIRCam" and zone.level1 is not None and zone.level1 > 0
+        if (
+            zone.classification == "motion"
+            or zone.sense_method in ("PIRCam", "PassiveInfrared")
+        )
+        and not zone.is_multiio
+        and zone.level1 is not None
+        and zone.level1 > 0
     }
 
 
@@ -73,7 +79,7 @@ def extract_factory_object(response: dict[str, Any]) -> int | None:
             continue
         try:
             obj = int(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if obj > 0:
             return obj

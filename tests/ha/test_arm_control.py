@@ -30,6 +30,7 @@ from custom_components.dahua_arc.const import (
 )
 from custom_components.dahua_arc.diagnostics import async_get_config_entry_diagnostics
 from custom_components.dahua_arc.protocol.arming import ArmArea
+from custom_components.dahua_arc.protocol.control import ARM_COMMAND_SPEC, CommandSpec
 from custom_components.dahua_arc.repairs import async_create_fix_flow
 from homeassistant.components.alarm_control_panel import DATA_COMPONENT
 from homeassistant.components.alarm_control_panel import (
@@ -115,6 +116,7 @@ async def harness(
     areas: int = 2,
     arm_control: bool = True,
     arm_spec: bool = True,
+    spec: CommandSpec | None = None,
 ) -> AsyncIterator[Harness]:
     base = {
         CONF_ENABLE_ARM_CONTROL: arm_control,
@@ -128,7 +130,7 @@ async def harness(
         version=5,
     )
     entry.add_to_hass(hass)
-    hub = make_hub(arm_control=arm_control, arm_spec=arm_spec)
+    hub = make_hub(arm_control=arm_control, arm_spec=arm_spec, spec=spec)
     arc = _arc(areas)
     if areas == 1:
         del hub.arming.areas[1]
@@ -597,3 +599,19 @@ async def test_no_repair_issue_when_a_code_is_set(hass: HomeAssistant) -> None:
     async with harness(hass, options=options) as h:
         issue_id = f"{h.entry.entry_id}_{ISSUE_ARM_CONTROL_WITHOUT_CODE}"
         assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_real_arm_command_spec_with_home_assistant_panel(
+    hass: HomeAssistant,
+) -> None:
+    async with harness(hass, spec=ARM_COMMAND_SPEC) as h:
+        assert h.state(SYSTEM_UID) == State.DISARMED
+
+        # Arm away through real command spec
+        await h.call("alarm_arm_away")
+        assert "AlarmRegion.setArmMode" in h.arc.calls
+        assert h.state(SYSTEM_UID) == State.ARMED_AWAY
+
+        # Disarm through real command spec
+        await h.call("alarm_disarm")
+        assert h.state(SYSTEM_UID) == State.DISARMED

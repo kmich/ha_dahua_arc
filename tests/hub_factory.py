@@ -16,7 +16,10 @@ from custom_components.dahua_arc.protocol.cgi import (
     discover_alarm_points,
     discover_multiio_parents,
 )
-from custom_components.dahua_arc.protocol.control import FAKE_COMMAND_SPEC
+from custom_components.dahua_arc.protocol.control import (
+    FAKE_COMMAND_SPEC,
+    CommandSpec,
+)
 from custom_components.dahua_arc.protocol.engine import StateEngine
 from custom_components.dahua_arc.protocol.inventory import (
     extract_area_zones,
@@ -148,6 +151,7 @@ def make_hub(
     serial: str = SERIAL,
     arm_control: bool = False,
     arm_spec: bool = True,
+    spec: CommandSpec | None = None,
 ) -> ArcHub:
     """``arm_control`` opts in; ``arm_spec`` gives it the fake command spec.
 
@@ -189,20 +193,22 @@ def make_hub(
         last_error=None,
         health=lambda: {"connected": True},
     )
+    hub.pircam = PirCamMedia(
+        hub.host, 80, "admin", "test-only", hub.zones, None, hub._notify
+    )
     if research:
-        hub.pircam = PirCamMedia(
-            hub.host, 80, "admin", "test-only", hub.zones, None, hub._notify
-        )
         hub.detector_test = DetectorTestController(
             hub.host, 5000, "admin", "test-only", hub.zones, hub._notify
         )
     hub.area_zones = extract_area_zones(hub.rpc_inventory)
     if arm_control and arm_spec:
-        hub.arm_command_spec = FAKE_COMMAND_SPEC
-        hub.allow_fake_arm_spec = True
+        hub.arm_command_spec = spec or FAKE_COMMAND_SPEC
+        hub.allow_fake_arm_spec = hub.arm_command_spec is FAKE_COMMAND_SPEC
         # Control sessions and the fallback table read talk to a FakeArc
         # that the test patches in with ``FakeArc.patch()``.
         hub.snapshot_client = SnapshotClient(hub.host, 5000, "admin", "test-only")
+    elif not arm_spec:
+        hub.arm_command_spec = None
     hub.setup_arm_control()
     hub.start = Mock()
     hub.stop = Mock()

@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import voluptuous as vol
-from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
+from homeassistant.components.repairs import RepairsFlow
+
+try:
+    from homeassistant.components.repairs import RepairsFlowResult
+except ImportError:
+    from homeassistant.data_entry_flow import (
+        FlowResult as RepairsFlowResult,  # type: ignore[attr-defined]
+    )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 

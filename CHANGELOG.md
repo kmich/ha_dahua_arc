@@ -4,7 +4,40 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
-## [Unreleased]
+## [1.0.0] - 2026-11-02
+
+### Added
+
+- **Native Hardware Arm & Disarm (`AlarmRegion.setArmMode`)**: Verified on Dahua ARC3800H hardware. Disassembled `dhnetsdk.dll` and reversed the operational RPC used by physical keypads and DMSS (`AlarmRegion.setArmMode`), completely resolving the `error 289407505: System Arming` configuration-table lock.
+- **Physical Keypad Emulation**: Whole-system arm away, arm home, and disarm across all areas simultaneously with zero zone selection required.
+- **Base64 User PIN Authentication**: Securely encodes the keypad PIN (`pwd: base64(pin)`) matching the ARC's internal `AlarmUserManager` database and authenticating physical keypad events.
+- **1-Based Subsystem Addressing**: Correctly maps 0-based area indexes to Dahua's native 1-based area identifiers (`areas: [1..32]`).
+- **Strict Home Assistant PIN Gating**: Cryptographic PBKDF2/SHA-256 code hashing and verification in Home Assistant with attempt rate-limiting and lockout. Disarm and arm actions strictly require PIN authentication when configured.
+- **Per-Area Control Panels**: Individual area alarm control panel entities and dashboard tiles for granular control of zones/areas alongside the master whole-system panel.
+- **Open-Zone Readiness & Fault Reporting**: Detailed open-zone discovery and refusal mapping when arming is blocked by unready detectors.
+- **Wireless PIR & PIRCam Observability**: Real-time armed motion tracking (`AlarmLocal`), 5-second pulse hold timers, intrusion snapshot/video memory caching, and sensor diagnostics.
+- **PIRCam Camera Platform & Persistent Snapshots**: PIR camera entities (`camera.*_latest_snapshot`) are universally available without requiring research mode. Generates a clean placeholder JPEG when awaiting initial events (preventing 0-byte downloads and "unsupported file format" viewer errors) and implements persistent disk caching across Home Assistant restarts.
+
+### Fixed
+
+- Eliminated `error 289407505: System Arming` caused by attempting to write to the installer configuration table `AreaArmMode` while the system was armed.
+- Fixed `AlarmRegion.setArmMode` parameter rejection by supplying `pwd` and 1-based area indexes.
+- Fixed PIR camera image download serving empty 0-byte payloads in Lovelace when research mode was disabled.
+
+## [0.6.0] - 2026-11-01
+
+### Added
+
+- Native panel DHIP arm/disarm command (`configManager.setConfig` targeting `AreaArmMode` table) verified on ARC3800H hardware.
+- Native panel password/PIN arming: `AlarmControlPanel` forwards the keypad code or configured PIN directly to `ArmCommand(code=...)`. Bad device credentials or user codes trigger an explicit `arm_bad_device_password` error with codes scrubbed from logs and transcripts.
+- Supervised arm probe tool (`scripts/arm_probe.py`): upgraded with `--instance` lifecycle management (`<service>.factory.instance` -> `object_id` -> `<service>.destroy`), `--sweep-instances` to probe candidate alarm services, and support for integer enum `0` and `"DisArm"` shapes.
+- Wireless PIR observability: extended motion detection and 5-second pulse hold timer to standard wireless PIR detectors (`PassiveInfrared` / ARD1233) and PIRCam (`ARD1731-W2`).
+- PIRCam media rescue: `PirCamMedia` downloads and caches intrusion video and snapshots (`last_alarm_temp_path` and `last_alarm_file_path`) in memory to preserve recordings before the ARC clears `/var/tmp`.
+- PIRCam camera attributes: exposed `last_alarm_time`, `media_type`, and `file_path` on the camera entity.
+
+### Removed
+
+- Completely removed the relay-driven keyfob hardware workaround from configuration flows, hub, protocol models, repairs, options, translations, and documentation in favor of native panel password/PIN arming.
 
 ## [0.5.0] - 2026-10-22
 

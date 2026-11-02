@@ -22,6 +22,7 @@ from .protocol.cgi import (
 )
 from .protocol.control import ARM_COMMAND_SPEC, ArmController, CommandSpec
 from .protocol.engine import Reconciler, StateEngine
+from .protocol.files import generate_placeholder_jpeg
 from .protocol.inventory import (
     PRIMARY_SENSOR_CLASSES,
     REDACTED,
@@ -38,7 +39,6 @@ from .protocol.inventory import (
     summarize_alarm_records,
     summarize_rpc_inventory,
 )
-from .protocol.keyfob import KeyfobSender
 from .protocol.models import Zone
 from .protocol.realtime import RealtimeClient
 from .protocol.snapshot import SnapshotClient
@@ -66,12 +66,14 @@ class ArcHub:
         periodic_resync_seconds: int = 300,
         enable_research_features: bool = False,
         enable_arm_control: bool = False,
+        storage_dir: str | None = None,
     ):
         self.host, self.http_port, self.dhip_port = host, http_port, dhip_port
         self.username, self.password = username, password
         self.periodic_resync_seconds = periodic_resync_seconds
         self.enable_research_features = enable_research_features
         self.enable_arm_control = enable_arm_control
+        self.storage_dir = storage_dir
         self.zones: dict[int, Zone] = {}
         self.parents: dict[int, dict[str, Any]] = {}
         self.alarm_records: dict[int, dict[str, str]] = {}
@@ -116,11 +118,6 @@ class ArcHub:
         self.allow_fake_arm_spec = False
         self.arm_control_unsupported = False
         self.arm_stop = threading.Event()
-        # Arming through a relay-driven keyfob instead of an RPC: set by the
-        # Home Assistant adapter (see configure_keyfob).
-        self.keyfob_sender: KeyfobSender | None = None
-        self.keyfob_wait_seconds = 15.0
-        self.keyfob_allow_disarm = False
 
     # -- listeners ---------------------------------------------------------
 
@@ -186,45 +183,11 @@ class ArcHub:
 
     # -- arm/disarm control ------------------------------------------------
 
-    def configure_keyfob(
-        self,
-        sender: KeyfobSender | None,
-        *,
-        wait_seconds: float = 15.0,
-        allow_disarm: bool = False,
-    ) -> None:
-        """Use (or stop using) a keyfob sender for arm control.
-
-        Called by the Home Assistant adapter before ``start``. If the hub is
-        already running its controller is rebuilt straight away.
-        """
-        self.keyfob_sender = sender
-        self.keyfob_wait_seconds = wait_seconds
-        self.keyfob_allow_disarm = allow_disarm
-        if self.arming is not None:
-            self.setup_arm_control()
-
     def setup_arm_control(self) -> None:
         """Build the controller only when opted in and a command path exists."""
         self.arm_control = None
         self.arm_control_unsupported = False
         if not self.enable_arm_control or self.arming is None:
-            return
-        if self.keyfob_sender is not None:
-            self.arm_control = ArmController(
-                host=self.host,
-                port=self.dhip_port,
-                username=self.username,
-                password=self.password,
-                sender=self.keyfob_sender,
-                tracker=self.arming,
-                read_table=self._read_arm_table,
-                hub_available=lambda: self.available,
-                auth_failed=lambda: self.auth_failed,
-                on_auth_failed=self._handle_auth_failure,
-                stop_event=self.arm_stop,
-                wait_timeout=self.keyfob_wait_seconds,
-            )
             return
         if self.arm_command_spec is None:
             self.arm_control_unsupported = True
@@ -274,6 +237,12 @@ class ArcHub:
 
     def fetch_pircam_image(self, index: int) -> bytes | None:
         return self.pircam.fetch_image(index) if self.pircam else None
+
+    def pircam_placeholder_image(self, label: str) -> bytes:
+        return generate_placeholder_jpeg(label)
+
+    def fetch_pircam_media(self, index: int) -> bytes | None:
+        return self.pircam.fetch_media(index) if self.pircam else None
 
     def start_detector_test(self, index: int) -> dict[str, Any]:
         if self.detector_test is None:
@@ -388,16 +357,17 @@ class ArcHub:
         self.area_zones = extract_area_zones(self.rpc_inventory)
         self.setup_arm_control()
 
+        self.pircam = PirCamMedia(
+            self.host,
+            self.http_port,
+            self.username,
+            self.password,
+            self.zones,
+            self.snapshot_client,
+            self._notify,
+            storage_dir=self.storage_dir,
+        )
         if self.enable_research_features:
-            self.pircam = PirCamMedia(
-                self.host,
-                self.http_port,
-                self.username,
-                self.password,
-                self.zones,
-                self.snapshot_client,
-                self._notify,
-            )
             self.detector_test = DetectorTestController(
                 self.host,
                 self.dhip_port,

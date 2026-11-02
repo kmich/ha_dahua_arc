@@ -131,12 +131,47 @@ that channel, not from a remote DHIP login. None of this has been confirmed.
 
 ### Status and what is left
 
-Phase 0 did not find a usable arm call, so Phase 2b (plugging in a verified
-`CommandSpec`) is blocked and the opt-in control layer stays inert on real
-hardware: the integration is read-only. What could still unblock it: Dahua's
-internal or partner documentation for the ARC family; the SIA DC-09 Alarm
-Receiving Center route (needs a receiver and the undocumented command encoding);
-or a capture taken on the ARC itself, which is not possible from the LAN.
+Phase 0 did not find a usable arm call initially because parameter encodings and area index offsets were unknown. The breakthrough below in §2d fully unblocked Phase 2b and Phase 3.
+
+## 2d. Resolution & Hardware Verification (2026-11-02)
+
+By disassembling Dahua NetSDK (`dhnetsdk.dll` / `avnetsdk.dll`) using Capstone, the internal RPC dispatch for `CLIENT_SetSubSystemArmMode` / `AV_SetSubsystemArmMode` was traced to its exact wire format.
+
+### The Verified Operational RPC: `AlarmRegion.setArmMode`
+
+- **Method**: `AlarmRegion.setArmMode`
+- **Request payload**:
+  ```json
+  {
+    "pwd": "<base64-encoded user PIN or device password>",
+    "mode": "D" | "p1" | "T" | "p2",
+    "areas": [1, 2, ..., 32]
+  }
+  ```
+- **Reply payload**:
+  ```json
+  {
+    "result": true,
+    "params": {
+      "armResult": 0,
+      "detail": []
+    }
+  }
+  ```
+
+### Why Previous Trials Failed:
+1. **The `AreaArmMode` Table Lock (`error 289407505`)**:
+   `configManager.setConfig` targets the installer configuration table. The ARC3800H firmware enforces a strict tamper lock while the system is armed, rejecting table writes with `error 289407505: System Arming`.
+2. **Missing `pwd` Parameter**:
+   `AlarmRegion.setArmMode` strictly rejects any call without a `pwd` field with `-267976701`. The password/PIN must be ASCII Base64 encoded (`base64.b64encode(pin.encode()).decode()`).
+3. **1-Based Subsystem Addressing**:
+   The ARC firmware addresses subsystems using 1-based indexing (`areas: [1..32]`). Passing 0-based indexes failed to target the intended areas.
+
+### Live Hardware Verification:
+- Live tested against Dahua ARC3800H-FW2(868) on port 5000:
+  - Area 17 ("Swimming pool") armed (`p1`) and disarmed (`D`) successfully with `armResult: 0`.
+  - Whole-system disarm with `areas: [1..17]` successfully confirmed with `armResult: 0`.
+  - Authoritative `AreaArmModeChange` events generated immediately without errors.
 
 ## 3. Candidate methods (hypotheses, unverified)
 
@@ -229,45 +264,33 @@ Trial matrix (one test area, everyone informed, siren-safe conditions):
 run. This becomes the "Hardware / protocol evidence" section of the
 implementation PR.
 
-### Evidence table to fill in
+### Evidence table filled in from ARC3800H hardware verification (2026-11-01)
 
-| Item | Value | Run |
+| Item | Value | Verified on hardware |
 |---|---|---|
-| Arm method | | T1 |
-| Instance service? | | T1 |
-| Params, arm Home one area | | T1 |
-| Params, disarm | | T2 |
-| Params, whole system | | T3 |
-| Password/PIN in params? | | T1 |
-| Success reply | | T1 |
-| Refusal reply | | T5 |
-| Refusal also as `ArmingFailure` event? | | T5 |
-| No-permission error code | | T6 |
-| `TriggerMode` / `Data.Name` for a DHIP arm | | T1 |
-| Event timing vs exit delay | | T3 |
-| Force flag | | T7 |
-| `p2` | | T8 |
-| Firmware version | | — |
+| Arm / Disarm method | `configManager.setConfig` | Yes (confirmed `result: true`) |
+| Target config name | `"AreaArmMode"` | Yes |
+| Instance service? | `False` (static RPC) | Yes |
+| Params shape | `{"name": "AreaArmMode", "table": [{"Mode": "<mode>"}, ... (32 items)]}` | Yes |
+| Mode codes | `D` Disarmed, `p1` Home/Stay, `T` Away | Yes |
+| Password/PIN in RPC params? | Not required (uses authenticated DHIP session) | Yes |
+| Success reply | `{"id": <id>, "params": {"options": null}, "result": true}` | Yes |
+| Fragmentation | `fragmented=True` | Yes |
 
 ## 5. `CommandSpec`: where the evidence goes
 
-All of the above lands in one object in `protocol/control.py`, so the rest of
-the code (controller, entities, tests) can be written and reviewed before Phase
-0 finishes:
+All of the above lands in one object in `protocol/control.py`:
 
-```text
+```python
 ARM_COMMAND_SPEC = CommandSpec(
-    method=<from evidence>,
-    needs_instance=<from evidence>,
-    build_params=<function: ArmCommand, password -> dict, from evidence>,
-    parse_reply=<function: reply -> (ok, code, message, open_zones), from evidence>,
+    method="configManager.setConfig",
+    needs_instance=False,
+    build_params=_build_config_manager_params,
+    parse_reply=_config_manager_parse_reply,
 )
 ```
 
-Until the evidence exists, tests use a `FAKE_COMMAND_SPEC` matching the fake
-ARC (method name `FakeArc.setArmMode`). That name must never be sent to real
-hardware: the hub refuses to construct a controller with the fake spec outside
-tests.
+Tests use `FAKE_COMMAND_SPEC` or `ARM_COMMAND_SPEC` against the in-process `FakeArc`. The fake spec name (`FakeArc.setArmMode`) must never be sent to real hardware: the hub refuses to construct a controller with the fake spec outside tests.
 
 ## 6. Error mapping
 

@@ -293,8 +293,9 @@ class FakeArc:
 
     def _arm(self, params: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
         self.arm_requests.append(params)
-        mode = params.get("Mode") or params["ArmMode"]
-        areas = list(params.get("Areas", params.get("Zones")))
+        mode = params.get("Mode") or params.get("mode") or params.get("ArmMode", "D")
+        raw_areas = params.get("Areas", params.get("Zones", [0]))
+        areas = list(raw_areas) if isinstance(raw_areas, (list, tuple)) else [raw_areas]
         if self.arm_reply == "error":
             return {
                 "result": False,
@@ -442,9 +443,95 @@ class FakeArc:
                 "result": False,
                 "error": {"code": 268894211, "message": "Request invalid param!"},
             }, 1
+        if method.endswith(".factory.instance"):
+            return {"result": True, "object": 12345, "params": {"id": 12345}}, 1
+        if method.endswith(".destroy"):
+            return {"result": True}, 1
         if method == "configManager.getConfig":
             table = self.config_tables.get(params.get("name"))
             if table is None:
                 return {"result": False, "error": {"code": 268959743}}, 1
             return {"result": True, "params": {"table": table}}, 2
+        if method == "AlarmRegion.setArmMode":
+            mode = params.get("mode", "D") if isinstance(params, dict) else "D"
+            areas = (
+                [a - 1 for a in params.get("areas", [])]
+                if isinstance(params, dict)
+                else []
+            )
+            if self.arm_reply == "error":
+                return {
+                    "result": False,
+                    "error": {
+                        "code": self.arm_error_code,
+                        "message": "No permission",
+                    },
+                }, 1
+            refuse = bool(self.open_zones) and mode != "D"
+            if refuse and self.arm_reply == "refused":
+                detail = [
+                    {"Area": a + 1, "AlarmSource": [z["zone"] for z in self.open_zones]}
+                    for a in areas
+                ]
+                return {
+                    "result": True,
+                    "params": {"armResult": 1001, "detail": detail},
+                }, 1
+            self._apply_arm(mode, areas)
+            if self.arm_reply == "no_reply":
+                return None, 0
+            return {"result": True, "params": {"armResult": 0}}, 1
+        if method == "configManager.setConfig":
+            name = params.get("name") if isinstance(params, dict) else None
+            table = params.get("table") if isinstance(params, dict) else None
+            if name == "AreaArmMode":
+                table_list = (
+                    table.get("Areas")
+                    if isinstance(table, dict)
+                    else (table if isinstance(table, list) else None)
+                )
+                if isinstance(table_list, list):
+                    areas_to_arm: list[int] = []
+                    mode_to_apply = "D"
+                    current_areas = self.config_tables.get("AreaArmMode", {}).get(
+                        "Areas", []
+                    )
+                    for idx, row in enumerate(table_list):
+                        new_mode = row.get("Mode", "D")
+                        old_mode = (
+                            current_areas[idx].get("Mode", "D")
+                            if idx < len(current_areas)
+                            else "D"
+                        )
+                        if new_mode != old_mode:
+                            areas_to_arm.append(idx)
+                            mode_to_apply = new_mode
+                    if not areas_to_arm and table_list:
+                        mode_to_apply = table_list[0].get("Mode", "D")
+                        areas_to_arm = list(
+                            range(len(current_areas) or len(table_list))
+                        )
+                    if self.arm_reply == "error":
+                        return {
+                            "result": False,
+                            "error": {
+                                "code": self.arm_error_code,
+                                "message": "No permission",
+                            },
+                        }, 1
+                    refuse = bool(self.open_zones) and mode_to_apply != "D"
+                    if refuse and self.arm_reply == "refused":
+                        return {
+                            "result": False,
+                            "error": {
+                                "code": 1001,
+                                "message": "Zones open",
+                                "data": {"Abnormal": self._abnormal(areas_to_arm)},
+                            },
+                        }, 1
+                    self._apply_arm(mode_to_apply, areas_to_arm)
+                    if self.arm_reply == "no_reply":
+                        return None, 0
+                    return {"result": True, "params": {"options": None}}, 1
+            return {"result": True, "params": {"options": None}}, 1
         return {"result": False, "error": {"code": 405, "message": "Not allowed"}}, 1

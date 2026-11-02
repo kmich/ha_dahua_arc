@@ -182,7 +182,13 @@ class StateEngine:
         # ARC event type until those devices are separately validated.
         if (
             code == PIRCAM_EVENT_CODE
-            and str(data.get("DevType") or data.get("SenseMethod") or "") != "PIRCam"
+            and str(data.get("DevType") or data.get("SenseMethod") or "")
+            not in ("PIRCam", "PassiveInfrared")
+            and not (
+                idx in self.zones
+                and self.zones[idx].classification == "motion"
+                and not self.zones[idx].is_multiio
+            )
         ):
             return
 
@@ -268,7 +274,14 @@ class StateEngine:
         changed = False
         with self.lock:
             zone = self.zones.get(idx)
-            if zone is None or zone.sense_method != "PIRCam":
+            if (
+                zone is None
+                or zone.is_multiio
+                or (
+                    zone.classification != "motion"
+                    and zone.sense_method not in ("PIRCam", "PassiveInfrared")
+                )
+            ):
                 return
             old_active = zone.active
             self.event_sequence += 1

@@ -144,11 +144,12 @@ async def test_platforms_create_expected_entities(hass: HomeAssistant) -> None:
     # The keyfob is a peripheral, never a primary zone sensor.
     assert _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{KEYFOB}") is None
 
-    # Research platforms stay empty unless research mode is enabled.
+    # Camera platform exposes PIRCam snapshot camera by default.
     assert (
         _entity_id(hass, "camera", f"{SERIAL}_pircam_{HALL_PIRCAM}_latest_snapshot")
-        is None
+        is not None
     )
+    # Research button platform stays empty unless research mode is enabled.
     assert (
         _entity_id(hass, "button", f"{SERIAL}_pircam_{HALL_PIRCAM}_start_detector_test")
         is None
