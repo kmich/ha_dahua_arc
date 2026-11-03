@@ -4,7 +4,7 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
-## [Unreleased]
+## [1.0.5] - 2026-11-03
 
 ### Fixed
 
