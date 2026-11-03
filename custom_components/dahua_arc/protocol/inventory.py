@@ -306,7 +306,7 @@ def classify_alarm_record(cfg: dict[str, str]) -> str:
         for key in ("Name", "SenseMethod", "SensorType", "DefenceAreaType")
     ).casefold()
 
-    if sense == "MultiIOTransmitterP":
+    if sense in ("MultiIOTransmitter", "MultiIOTransmitterP"):
         return "multiio_parent" if level2 == 0 else "multiio_input"
     if sense in {"PIRCam", "PassiveInfrared"}:
         return "motion"
@@ -372,7 +372,10 @@ def record_is_peripheral_or_placeholder(cfg: dict[str, str]) -> bool:
     sense = str(cfg.get("SenseMethod", ""))
     if sense in PERIPHERAL_SENSE_METHODS:
         return True
-    return sense == "MultiIOTransmitterP" and safe_int(cfg.get("Level2")) == 0
+    return (
+        sense in ("MultiIOTransmitter", "MultiIOTransmitterP")
+        and safe_int(cfg.get("Level2")) == 0
+    )
 
 
 def summarize_alarm_records(records: dict[int, dict[str, str]]) -> dict[str, Any]:

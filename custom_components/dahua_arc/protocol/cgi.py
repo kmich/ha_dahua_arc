@@ -68,7 +68,7 @@ def discover_multiio_parents(
 ) -> dict[int, dict[str, Any]]:
     parents: dict[int, dict[str, Any]] = {}
     for idx, cfg in records.items():
-        if cfg.get("SenseMethod") != "MultiIOTransmitterP":
+        if cfg.get("SenseMethod") not in ("MultiIOTransmitter", "MultiIOTransmitterP"):
             continue
         level1, level2 = safe_int(cfg.get("Level1")), safe_int(cfg.get("Level2"))
         if level1 is not None and level1 >= 0 and level2 == 0:
@@ -104,7 +104,10 @@ def discover_alarm_points(
         classification = classify_alarm_record(cfg)
         sense_method = cfg.get("SenseMethod", "")
         level1, level2 = safe_int(cfg.get("Level1")), safe_int(cfg.get("Level2"))
-        is_multiio_input = classification == "multiio_input"
+        is_multiio_input = (level2 or 0) > 0 and (
+            level1 in parents
+            or sense_method in ("MultiIOTransmitter", "MultiIOTransmitterP")
+        )
 
         parent = parents.get(level1 or -1, {}) if is_multiio_input else {}
         zones[idx] = Zone(

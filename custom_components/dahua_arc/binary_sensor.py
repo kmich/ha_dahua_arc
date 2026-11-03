@@ -43,7 +43,12 @@ PARALLEL_UPDATES = 0
 def _device_class(zone: Zone) -> BinarySensorDeviceClass | None:
     name = zone.name.lower()
     cls = zone.classification
-    if cls in {"motion", "radar"} or "pir" in name or "motion" in name:
+    if (
+        cls in {"motion", "radar"}
+        or "pir" in name
+        or "motion" in name
+        or "radar" in name
+    ):
         return BinarySensorDeviceClass.MOTION
     if cls == "smoke_or_fire" or "smoke" in name:
         return BinarySensorDeviceClass.SMOKE
