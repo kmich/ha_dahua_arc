@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from urllib.error import HTTPError
 
 from homeassistant.config_entries import ConfigEntry
@@ -53,7 +54,10 @@ from .const import (
     PLATFORMS,
 )
 from .entity import radio_identifier
-from .protocol.inventory import record_is_peripheral_or_placeholder
+from .protocol.inventory import (
+    classify_radio_model,
+    record_is_peripheral_or_placeholder,
+)
 from .vendor.dahua.exceptions import LoginError
 
 _LOGGER = logging.getLogger(__name__)
@@ -414,13 +418,24 @@ def _cleanup_v03_phantom_zone_entities(
     snapshot, or whose name changed, keeps its entity (it shows unavailable),
     so user customizations and automations are never destroyed by a
     transient discovery gap.
+
+    The same rule covers a peripheral whose own row reports a detector
+    SenseMethod (a re-paired key fob left as "PIRCam"): its radio model says
+    it is not a sensor, so its zone and PIRCam snapshot entities go too.
     """
     registry = er.async_get(hass)
     prefix = f"{uid}_zone_"
+    pircam = re.compile(rf"^{re.escape(uid)}_pircam_(\d+)_latest_snapshot$")
+    models = {device.alarm_index: device.model for device in hub.radio_devices.values()}
     removed = 0
 
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         unique_id = str(entity.unique_id or "")
+        if match := pircam.match(unique_id):
+            if classify_radio_model(models.get(int(match.group(1)))):
+                registry.async_remove(entity.entity_id)
+                removed += 1
+            continue
         if not unique_id.startswith(prefix):
             continue
         try:
@@ -430,14 +445,14 @@ def _cleanup_v03_phantom_zone_entities(
         if idx in hub.primary_zones:
             continue
         cfg = hub.alarm_records.get(idx)
-        if cfg is None or not record_is_peripheral_or_placeholder(cfg):
+        if cfg is None or not record_is_peripheral_or_placeholder(cfg, models.get(idx)):
             continue
         registry.async_remove(entity.entity_id)
         removed += 1
 
     if removed:
         _LOGGER.warning(
-            "Removed %s obsolete Dahua ARC v0.3 phantom/peripheral zone entities",
+            "Removed %s obsolete Dahua ARC phantom/peripheral zone entities",
             removed,
         )
 
