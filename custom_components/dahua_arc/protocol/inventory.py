@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..vendor.dahua import DHIPTransport
+from .models import Zone
 from .util import bool_value, safe_int, timestamp
 
 _LOGGER = logging.getLogger(__name__)
@@ -360,17 +361,41 @@ PERIPHERAL_SENSE_METHODS = frozenset(
     {"ProRepeater", "AlarmBell", "RemoteControl", "LEDKeypad"}
 )
 
+# AirFly model families that are never alarm detectors. The model is reported
+# by the radio itself, so it outranks the device's own Alarm[] row: after the
+# peripherals are cleared and re-paired, that row can keep the SenseMethod of
+# whatever used the slot before (a key fob left as "PIRCam" was observed).
+PERIPHERAL_MODEL_CLASSES = (
+    ("ARA24", "keyfob"),
+    ("ARA13", "siren"),
+    ("ARA43", "repeater"),
+)
 
-def record_is_peripheral_or_placeholder(cfg: dict[str, str]) -> bool:
+
+def classify_radio_model(model: str | None) -> str | None:
+    """Return the peripheral class implied by an AirFly model name, if any."""
+    text = (model or "").strip().upper()
+    for prefix, classification in PERIPHERAL_MODEL_CLASSES:
+        if text.startswith(prefix):
+            return classification
+    return None
+
+
+def record_is_peripheral_or_placeholder(
+    cfg: dict[str, str], model: str | None = None
+) -> bool:
     """Return True when a record can never be a primary alarm input.
 
     Unlike :func:`classify_alarm_record`, this only uses protocol fields, so a
-    user renaming a zone can never flip the answer.
+    user renaming a zone can never flip the answer. ``model`` is the AirFly
+    model of the radio device that owns the row, when known.
     """
     if not record_is_physical(cfg):
         return True
     sense = str(cfg.get("SenseMethod", ""))
     if sense in PERIPHERAL_SENSE_METHODS:
+        return True
+    if safe_int(cfg.get("Level2")) == 0 and classify_radio_model(model):
         return True
     return (
         sense in ("MultiIOTransmitter", "MultiIOTransmitterP")
@@ -563,19 +588,40 @@ def extract_radio_devices(
         )
         parent_serial = str(meta.get("ParentNodeId") or "").strip()
         parent_level1 = serial_to_level.get(parent_serial) if parent_serial else None
+        model = str(meta.get("ModelName") or "").strip() or None
         result[level1] = RadioDeviceInfo(
             level1=level1,
             alarm_index=alarm_index,
             name=str(cfg.get("Name") or f"ARC device {level1}"),
             sense_method=str(cfg.get("SenseMethod") or ""),
-            classification=classify_alarm_record(cfg),
-            model=(str(meta.get("ModelName") or "").strip() or None),
+            classification=classify_radio_model(model) or classify_alarm_record(cfg),
+            model=model,
             serial=serial,
             serial_hash=serial_hash,
             parent_level1=parent_level1,
             area_hint=area_hints.get(alarm_index),
         )
     return result
+
+
+def apply_radio_model_classes(
+    zones: dict[int, Zone], radio_devices: dict[int, RadioDeviceInfo]
+) -> dict[int, str]:
+    """Reclassify a peripheral's own Alarm[] row from its radio model.
+
+    A key fob, siren or repeater is never a primary input, whatever SenseMethod
+    its row reports. Returns ``{alarm_index: old classification}`` for every
+    row that changed, so the caller can log it.
+    """
+    changed: dict[int, str] = {}
+    for device in radio_devices.values():
+        peripheral = classify_radio_model(device.model)
+        zone = zones.get(device.alarm_index)
+        if peripheral is None or zone is None or zone.classification == peripheral:
+            continue
+        changed[device.alarm_index] = zone.classification
+        zone.classification = peripheral
+    return changed
 
 
 def extract_service_names(response: dict[str, Any]) -> list[str]:

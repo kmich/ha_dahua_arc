@@ -4,6 +4,12 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
+## [Unreleased]
+
+### Fixed
+
+- **Key fob shown as a PIR camera**: after the ARC's peripherals are cleared and re-paired, a device's own `Alarm[]` row can keep the `SenseMethod` of whatever used that slot before. A key fob left as `PIRCam` was exposed as a motion sensor with a snapshot camera. The paired radio's AirFly model now wins for peripherals that are never detectors (key fobs `ARA24`, sirens `ARA13`, repeaters `ARA43`). Those rows are no longer primary zones and get no camera. Setup removes the zone and snapshot entities an earlier build created for them, and logs a warning naming the row.
+
 ## [1.0.0] - 2026-11-02
 
 ### Added

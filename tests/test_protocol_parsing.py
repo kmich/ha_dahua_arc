@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from custom_components.dahua_arc.protocol import cgi, files, inventory, util
+from custom_components.dahua_arc.protocol.models import Zone
 from custom_components.dahua_arc.protocol.snapshot import SnapshotClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +172,85 @@ def test_extract_radio_devices_links_repeater_children() -> None:
     assert devices[2].area_hint == "Garden"
     assert devices[2].device_key.startswith("radio:")
     assert "PIR" not in devices[2].device_key
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("ARA24-W2", "keyfob"),
+        ("ara13-w2", "siren"),
+        (" ARA43-W2 ", "repeater"),
+        ("ARD1731-W2", None),
+        ("ARD1233-W2", None),
+        ("ARM9A4-W2", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_classify_radio_model(model: str | None, expected: str | None) -> None:
+    assert inventory.classify_radio_model(model) == expected
+
+
+def test_radio_model_overrides_a_stale_pircam_row() -> None:
+    """A re-paired key fob whose row still says PIRCam is not a motion sensor."""
+    records = {
+        0: _cfg(SenseMethod="PIRCam", Name="Keyfob01", Level1="1"),
+        5: _cfg(SenseMethod="PIRCam", Name="Stairs PIR Camera", Level1="2"),
+    }
+    inv = {
+        "candidate_configs": {
+            "_AirFlyDeviceMap_": {
+                "ok": True,
+                "response": {
+                    "params": {
+                        "table": {
+                            "DeviceInfo": [
+                                {
+                                    "ShotAddr": 1,
+                                    "State": 1,
+                                    "SN": "FOB",
+                                    "ModelName": "ARA24-W2",
+                                },
+                                {
+                                    "ShotAddr": 2,
+                                    "State": 1,
+                                    "SN": "CAM",
+                                    "ModelName": "ARD1731-W2",
+                                },
+                            ]
+                        }
+                    }
+                },
+            }
+        }
+    }
+    devices = inventory.extract_radio_devices(inv, records)
+    assert devices[1].classification == "keyfob"
+    assert devices[2].classification == "motion"
+
+    zones = {
+        idx: Zone(
+            index=idx,
+            name=cfg["Name"],
+            sense_method="PIRCam",
+            classification="motion",
+            level1=int(cfg["Level1"]),
+            level2=0,
+        )
+        for idx, cfg in records.items()
+    }
+    assert inventory.apply_radio_model_classes(zones, devices) == {0: "motion"}
+    assert zones[0].classification == "keyfob"
+    assert zones[5].classification == "motion"
+    # Applying again is a no-op.
+    assert inventory.apply_radio_model_classes(zones, devices) == {}
+
+    assert inventory.record_is_peripheral_or_placeholder(records[0], "ARA24-W2")
+    assert not inventory.record_is_peripheral_or_placeholder(records[0])
+    assert not inventory.record_is_peripheral_or_placeholder(records[5], "ARD1731-W2")
+    # A wired MultiIO input never inherits its board's model.
+    wired = _cfg(SenseMethod="MultiIOTransmitter", Level1="3", Level2="10")
+    assert not inventory.record_is_peripheral_or_placeholder(wired, "ARA24-W2")
 
 
 def test_snapshot_parse_states() -> None:

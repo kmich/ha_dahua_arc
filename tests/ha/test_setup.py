@@ -467,6 +467,45 @@ async def test_phantom_cleanup_only_removes_placeholders_and_peripherals(
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_keyfob_with_stale_pircam_row_gets_no_sensor_or_camera(
+    hass: HomeAssistant,
+) -> None:
+    """A re-paired fob can keep its slot's old "PIRCam" SenseMethod."""
+    entry = _entry(hass)
+    registry = er.async_get(hass)
+    # Entities an earlier build created from that stale row.
+    registry.async_get_or_create(
+        "binary_sensor", DOMAIN, f"{SERIAL}_zone_{KEYFOB}", config_entry=entry
+    )
+    registry.async_get_or_create(
+        "camera",
+        DOMAIN,
+        f"{SERIAL}_pircam_{KEYFOB}_latest_snapshot",
+        config_entry=entry,
+    )
+    hub = make_hub(stale_fob_pircam=True)
+    assert hub.zones[KEYFOB].sense_method == "PIRCam"
+    assert KEYFOB not in hub.primary_zones
+    assert hub.radio_devices[4].classification == "keyfob"
+    await _setup(hass, entry, hub)
+
+    assert _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{KEYFOB}") is None
+    assert (
+        _entity_id(hass, "camera", f"{SERIAL}_pircam_{KEYFOB}_latest_snapshot") is None
+    )
+    # The real PIR camera keeps its sensor and snapshot camera.
+    assert _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{HALL_PIRCAM}")
+    assert _entity_id(hass, "camera", f"{SERIAL}_pircam_{HALL_PIRCAM}_latest_snapshot")
+    # The fob still gets its radio health entities, like any paired device.
+    radio_uids = {
+        entity.unique_id
+        for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if entity.unique_id.endswith("_tamper")
+    }
+    assert len(radio_uids) == 3  # MultiIO board, PIRCam, keyfob
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_remove_device_only_when_no_longer_on_the_arc(
     hass: HomeAssistant,
 ) -> None:
