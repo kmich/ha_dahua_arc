@@ -79,3 +79,44 @@ async def test_multiio_child_is_under_physical_parent_and_preserves_manual_area(
         entry, options={**entry.options, CONF_ZONE_AREA_DECISIONS: decisions}
     )
     assert entry.options[CONF_ZONE_AREA_DECISIONS]["7"]["area_id"] == kitchen.id
+
+
+async def test_multiio_child_reparenting_handles_stale_parent(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="ARC-TEST-001", data={})
+    entry.add_to_hass(hass)
+    registry = dr.async_get(hass)
+    registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "ARC-TEST-001")},
+        name="ARC Root",
+    )
+    old_parent = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "old_parent_id")},
+        name="Old Parent",
+    )
+    # Child registered with old parent
+    registry.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        parent_device_id=old_parent.id,
+        identifiers={(DOMAIN, "ARC-TEST-001:zone:7")},
+        name="Kitchen Window",
+    )
+    zone = Zone(
+        index=7,
+        name="Kitchen Window",
+        classification="multiio_input",
+        is_multiio=True,
+        level1=2,
+        level2=1,
+    )
+    hub = SimpleNamespace(
+        radio_devices={},
+        parents={2: {"name": "MultiIO board 2"}},
+        primary_zones={7: zone},
+    )
+    physical = _register_radio_devices(hass, entry, hub, "ARC-TEST-001")
+    children = _register_multiio_children(hass, entry, hub, "ARC-TEST-001", physical)
+    assert children[7].parent_device_id == physical[2].id
