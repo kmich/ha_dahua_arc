@@ -188,12 +188,39 @@ def _register_multiio_children(
         if not zone.is_multiio or zone.level1 not in devices:
             continue
         parent = devices[zone.level1]
-        children[index] = registry.async_get_or_create_child(
-            config_entry_id=entry.entry_id,
-            parent_device_id=parent.id,
-            identifiers={(DOMAIN, f"{uid}:zone:{index}")},
-            name=zone.name,
-        )
+        ident = (DOMAIN, f"{uid}:zone:{index}")
+        existing = registry.async_get_device(identifiers={ident})
+        if (
+            existing is not None
+            and getattr(existing, "parent_device_id", None) != parent.id
+        ):
+            # Home Assistant raises DeviceInfoError if attempting to reparent an existing
+            # child device in-place. Remove the stale device entry first so it can be re-created
+            # under the proper physical parent device.
+            registry.async_remove_device(existing.id)
+        try:
+            children[index] = registry.async_get_or_create_child(
+                config_entry_id=entry.entry_id,
+                parent_device_id=parent.id,
+                identifiers={ident},
+                name=zone.name,
+            )
+        except Exception as exc:
+            _LOGGER.warning(
+                "Re-creating MultiIO child device for zone %s under parent %s after error: %s",
+                index,
+                parent.id,
+                exc,
+            )
+            existing = registry.async_get_device(identifiers={ident})
+            if existing is not None:
+                registry.async_remove_device(existing.id)
+            children[index] = registry.async_get_or_create_child(
+                config_entry_id=entry.entry_id,
+                parent_device_id=parent.id,
+                identifiers={ident},
+                name=zone.name,
+            )
     return children
 
 
