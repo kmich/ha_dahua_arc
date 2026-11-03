@@ -120,3 +120,47 @@ async def test_multiio_child_reparenting_handles_stale_parent(
     physical = _register_radio_devices(hass, entry, hub, "ARC-TEST-001")
     children = _register_multiio_children(hass, entry, hub, "ARC-TEST-001", physical)
     assert children[7].parent_device_id == physical[2].id
+
+
+async def test_multiio_child_reparenting_when_async_get_device_returns_none(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="ARC-TEST-002", data={})
+    entry.add_to_hass(hass)
+    registry = dr.async_get(hass)
+    registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "ARC-TEST-002")},
+        name="ARC Root",
+    )
+    old_parent = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "old_parent_id_2")},
+        name="Old Parent",
+    )
+    # Child registered with old parent
+    registry.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        parent_device_id=old_parent.id,
+        identifiers={(DOMAIN, "ARC-TEST-002:zone:150")},
+        name="Radar Zone 150",
+    )
+    # Simulate HA 2026.8+ where async_get_device is deprecated / returns None
+    registry.async_get_device = lambda *args, **kwargs: None
+
+    zone = Zone(
+        index=150,
+        name="Radar Zone 150",
+        classification="multiio_input",
+        is_multiio=True,
+        level1=2,
+        level2=1,
+    )
+    hub = SimpleNamespace(
+        radio_devices={},
+        parents={2: {"name": "MultiIO board 2"}},
+        primary_zones={150: zone},
+    )
+    physical = _register_radio_devices(hass, entry, hub, "ARC-TEST-002")
+    children = _register_multiio_children(hass, entry, hub, "ARC-TEST-002", physical)
+    assert children[150].parent_device_id == physical[2].id

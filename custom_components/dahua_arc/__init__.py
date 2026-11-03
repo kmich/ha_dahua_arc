@@ -60,6 +60,39 @@ _LOGGER = logging.getLogger(__name__)
 DahuaArcConfigEntry = ConfigEntry[ArcHub]
 
 
+def _get_device_by_identifier(
+    registry: dr.DeviceRegistry,
+    config_entry_id: str,
+    identifier: tuple[str, str],
+) -> dr.DeviceEntry | None:
+    """Find a device entry by identifier across Home Assistant versions without deprecation warnings."""
+    # 1. HA 2026.8+ scoped lookup
+    getter = getattr(registry, "async_get_device_by_identifier", None)
+    if getter is not None:
+        device = getter(identifier, config_entry_id)
+        if device is not None:
+            return device
+
+    # 2. Match within config entry devices
+    for device in dr.async_entries_for_config_entry(registry, config_entry_id):
+        if identifier in device.identifiers:
+            return device
+
+    # 3. HA 2026.8+ collection lookup
+    get_devices = getattr(registry, "async_get_devices", None)
+    if get_devices is not None:
+        devices = get_devices(identifiers={identifier})
+        if devices:
+            return next(iter(devices))
+
+    # 4. Legacy fallback
+    legacy_getter = getattr(registry, "async_get_device", None)
+    if legacy_getter is not None:
+        return legacy_getter(identifiers={identifier})
+
+    return None
+
+
 def _register_radio_devices(
     hass: HomeAssistant, entry: DahuaArcConfigEntry, hub: ArcHub, uid: str
 ) -> dict[int, dr.DeviceEntry]:
@@ -67,11 +100,7 @@ def _register_radio_devices(
     registry = dr.async_get(hass)
     created: dict[int, dr.DeviceEntry] = {}
 
-    get_device = getattr(registry, "async_get_device_by_identifier", None)
-    if get_device is not None:
-        root = get_device((DOMAIN, uid), entry.entry_id)
-    else:
-        root = registry.async_get_device(identifiers={(DOMAIN, uid)})
+    root = _get_device_by_identifier(registry, entry.entry_id, (DOMAIN, uid))
     if root is None:
         raise RuntimeError("Dahua ARC root device is not registered")
 
@@ -189,7 +218,7 @@ def _register_multiio_children(
             continue
         parent = devices[zone.level1]
         ident = (DOMAIN, f"{uid}:zone:{index}")
-        existing = registry.async_get_device(identifiers={ident})
+        existing = _get_device_by_identifier(registry, entry.entry_id, ident)
         if (
             existing is not None
             and getattr(existing, "parent_device_id", None) != parent.id
@@ -212,9 +241,13 @@ def _register_multiio_children(
                 parent.id,
                 exc,
             )
-            existing = registry.async_get_device(identifiers={ident})
+            existing = _get_device_by_identifier(registry, entry.entry_id, ident)
             if existing is not None:
                 registry.async_remove_device(existing.id)
+            else:
+                for dev in dr.async_entries_for_config_entry(registry, entry.entry_id):
+                    if ident in dev.identifiers:
+                        registry.async_remove_device(dev.id)
             children[index] = registry.async_get_or_create_child(
                 config_entry_id=entry.entry_id,
                 parent_device_id=parent.id,
