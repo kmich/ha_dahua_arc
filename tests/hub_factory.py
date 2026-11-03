@@ -127,7 +127,12 @@ def inventory(serial: str = SERIAL) -> dict:
                                 "SN": "PIRCAM-SN-1",
                                 "ModelName": "ARD1731",
                             },
-                            {"ShotAddr": 4, "State": 1, "SN": "FOB-SN-1"},
+                            {
+                                "ShotAddr": 4,
+                                "State": 1,
+                                "SN": "FOB-SN-1",
+                                "ModelName": "ARA24-W2",
+                            },
                         ]
                     }
                 }
@@ -152,11 +157,13 @@ def make_hub(
     arm_control: bool = False,
     arm_spec: bool = True,
     spec: CommandSpec | None = None,
+    stale_fob_pircam: bool = False,
 ) -> ArcHub:
     """``arm_control`` opts in; ``arm_spec`` gives it the fake command spec.
 
     Without a spec the hub behaves like the shipped integration, which has no
-    verified arm command yet.
+    verified arm command yet. ``stale_fob_pircam`` gives the key fob's row the
+    "PIRCam" SenseMethod a re-paired fob can inherit from its slot.
     """
     hub = ArcHub(
         "192.0.2.10",
@@ -168,6 +175,8 @@ def make_hub(
         enable_arm_control=arm_control,
     )
     hub.alarm_records = {idx: dict(cfg) for idx, cfg in RECORDS.items()}
+    if stale_fob_pircam:
+        hub.alarm_records[KEYFOB]["SenseMethod"] = "PIRCam"
     hub.parents = discover_multiio_parents(hub.alarm_records)
     hub.zones = discover_alarm_points(hub.alarm_records, SNAPSHOT, hub.parents)
     hub.rpc_inventory = inventory(serial)
@@ -177,6 +186,7 @@ def make_hub(
     hub.radio_devices = extract_radio_devices(
         hub.rpc_inventory, hub.alarm_records, hub.area_hints
     )
+    hub.apply_radio_models()
     # Notify synchronously so tests need not wait for the burst debounce.
     hub.arming = ArmingTracker(
         extract_arm_areas(hub.rpc_inventory), hub._notify_arm, quiet_seconds=0

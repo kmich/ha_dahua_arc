@@ -29,6 +29,7 @@ from .protocol.inventory import (
     EventCatalog,
     InventoryRpcClient,
     RadioDeviceInfo,
+    apply_radio_model_classes,
     classify_alarm_record,
     extract_area_zones,
     extract_arm_areas,
@@ -303,6 +304,22 @@ class ArcHub:
             return None
         return self.radio_devices.get(zone.level1)
 
+    def apply_radio_models(self) -> None:
+        """Let a peripheral's radio model override a stale Alarm[] SenseMethod."""
+        for idx, old in apply_radio_model_classes(
+            self.zones, self.radio_devices
+        ).items():
+            zone = self.zones[idx]
+            _LOGGER.warning(
+                "ARC zone %s (%s) reports SenseMethod %s but its radio is a %s; "
+                "not exposing it as a %s sensor",
+                idx,
+                zone.name,
+                zone.sense_method or "-",
+                zone.classification,
+                old or "zone",
+            )
+
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
@@ -350,6 +367,7 @@ class ArcHub:
         self.radio_devices = extract_radio_devices(
             self.rpc_inventory, self.alarm_records, self.area_hints
         )
+        self.apply_radio_models()
         self._static_summary = self._build_static_summary()
         self.arming = ArmingTracker(
             extract_arm_areas(self.rpc_inventory), self._notify_arm
