@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from urllib.error import HTTPError
 
@@ -69,28 +70,72 @@ def _get_device_by_identifier(
     # 1. HA 2026.8+ scoped lookup
     getter = getattr(registry, "async_get_device_by_identifier", None)
     if getter is not None:
-        device = getter(identifier, config_entry_id)
-        if device is not None:
-            return device
+        try:
+            device = getter(identifier, config_entry_id)
+            if device is not None:
+                return device
+        except Exception:
+            pass
 
     # 2. Match within config entry devices
-    for device in dr.async_entries_for_config_entry(registry, config_entry_id):
-        if identifier in device.identifiers:
-            return device
+    try:
+        for device in dr.async_entries_for_config_entry(registry, config_entry_id):
+            if identifier in getattr(device, "identifiers", ()):
+                return device
+    except Exception:
+        pass
 
-    # 3. HA 2026.8+ collection lookup
-    get_devices = getattr(registry, "async_get_devices", None)
-    if get_devices is not None:
-        devices = get_devices(identifiers={identifier})
-        if devices:
-            return next(iter(devices))
-
-    # 4. Legacy fallback
-    legacy_getter = getattr(registry, "async_get_device", None)
-    if legacy_getter is not None:
-        return legacy_getter(identifiers={identifier})
+    # 3. Global iteration over registry.devices (handles cross-entry main devices)
+    devices = getattr(registry, "devices", None)
+    if devices is not None:
+        try:
+            for item in devices:
+                device = registry.async_get(item) if isinstance(item, str) else item
+                if device is not None and identifier in getattr(
+                    device, "identifiers", ()
+                ):
+                    return device
+        except Exception:
+            pass
 
     return None
+
+
+def _get_child_or_device_by_identifier(
+    registry: dr.DeviceRegistry,
+    config_entry_id: str,
+    identifier: tuple[str, str],
+) -> dr.DeviceEntry | dr.ChildDeviceEntry | None:
+    """Find a child device or main device by identifier across Home Assistant versions."""
+    # 1. HA 2026.9+ scoped child device lookup (child devices live in _child_devices, not _devices)
+    child_getter = getattr(registry, "async_get_child_device_by_identifier", None)
+    if child_getter is not None:
+        with contextlib.suppress(Exception):
+            child = child_getter(identifier, config_entry_id)
+            if child is not None:
+                return child
+
+    # 2. HA 2026.9+ child entries helper for config entry
+    child_entries_fn = getattr(dr, "async_child_entries_for_config_entry", None)
+    if child_entries_fn is not None:
+        with contextlib.suppress(Exception):
+            for child in child_entries_fn(registry, config_entry_id):
+                if identifier in getattr(child, "identifiers", ()):
+                    return child
+
+    # 3. Global iteration over registry.child_devices
+    child_devices = getattr(registry, "child_devices", None)
+    if child_devices is not None:
+        with contextlib.suppress(Exception):
+            for item in child_devices:
+                child = registry.async_get(item) if isinstance(item, str) else item
+                if child is not None and identifier in getattr(
+                    child, "identifiers", ()
+                ):
+                    return child
+
+    # 4. Fallback to main device lookup (for older HA or pre-conversion main devices)
+    return _get_device_by_identifier(registry, config_entry_id, identifier)
 
 
 def _register_radio_devices(
@@ -218,7 +263,7 @@ def _register_multiio_children(
             continue
         parent = devices[zone.level1]
         ident = (DOMAIN, f"{uid}:zone:{index}")
-        existing = _get_device_by_identifier(registry, entry.entry_id, ident)
+        existing = _get_child_or_device_by_identifier(registry, entry.entry_id, ident)
         if (
             existing is not None
             and getattr(existing, "parent_device_id", None) != parent.id
@@ -241,13 +286,18 @@ def _register_multiio_children(
                 parent.id,
                 exc,
             )
-            existing = _get_device_by_identifier(registry, entry.entry_id, ident)
-            if existing is not None:
-                registry.async_remove_device(existing.id)
-            else:
-                for dev in dr.async_entries_for_config_entry(registry, entry.entry_id):
-                    if ident in dev.identifiers:
-                        registry.async_remove_device(dev.id)
+            for attr_name in ("child_devices", "devices"):
+                collection = getattr(registry, attr_name, None)
+                if collection is None:
+                    continue
+                to_remove = [
+                    (registry.async_get(item) if isinstance(item, str) else item)
+                    for item in list(collection)
+                ]
+                for dev in to_remove:
+                    if dev is not None and ident in getattr(dev, "identifiers", ()):
+                        with contextlib.suppress(Exception):
+                            registry.async_remove_device(dev.id)
             children[index] = registry.async_get_or_create_child(
                 config_entry_id=entry.entry_id,
                 parent_device_id=parent.id,

@@ -164,3 +164,134 @@ async def test_multiio_child_reparenting_when_async_get_device_returns_none(
     physical = _register_radio_devices(hass, entry, hub, "ARC-TEST-002")
     children = _register_multiio_children(hass, entry, hub, "ARC-TEST-002", physical)
     assert children[150].parent_device_id == physical[2].id
+
+
+async def test_multiio_child_reparenting_cross_config_entry(
+    hass: HomeAssistant,
+) -> None:
+    old_entry = MockConfigEntry(domain=DOMAIN, unique_id="ARC-OLD", data={})
+    old_entry.add_to_hass(hass)
+    new_entry = MockConfigEntry(domain=DOMAIN, unique_id="ARC-NEW", data={})
+    new_entry.add_to_hass(hass)
+
+    registry = dr.async_get(hass)
+    registry.async_get_or_create(
+        config_entry_id=new_entry.entry_id,
+        identifiers={(DOMAIN, "ARC-NEW")},
+        name="ARC Root New",
+    )
+    old_parent = registry.async_get_or_create(
+        config_entry_id=old_entry.entry_id,
+        identifiers={(DOMAIN, "old_parent_id_3")},
+        name="Old Parent",
+    )
+    # Child registered with old entry and old parent
+    registry.async_get_or_create_child(
+        config_entry_id=old_entry.entry_id,
+        parent_device_id=old_parent.id,
+        identifiers={(DOMAIN, "ARC-NEW:zone:150")},
+        name="Radar Zone 150",
+    )
+
+    zone = Zone(
+        index=150,
+        name="Radar Zone 150",
+        classification="multiio_input",
+        is_multiio=True,
+        level1=2,
+        level2=1,
+    )
+    hub = SimpleNamespace(
+        radio_devices={},
+        parents={2: {"name": "MultiIO board 2"}},
+        primary_zones={150: zone},
+    )
+    physical = _register_radio_devices(hass, new_entry, hub, "ARC-NEW")
+    children = _register_multiio_children(hass, new_entry, hub, "ARC-NEW", physical)
+    assert children[150].parent_device_id == physical[2].id
+
+
+async def test_multiio_child_reparenting_separate_child_devices_store(
+    hass: HomeAssistant,
+) -> None:
+    """Replicate HA 2026.10.4 where child devices live in child_devices, not devices."""
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="ARC-TEST-2026-10", data={})
+    entry.add_to_hass(hass)
+    registry = dr.async_get(hass)
+    root = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "ARC-TEST-2026-10")},
+        name="ARC Root",
+    )
+
+    child_store: dict[str, SimpleNamespace] = {
+        "stale_child_150": SimpleNamespace(
+            id="stale_child_150",
+            config_entry_id=entry.entry_id,
+            parent_device_id=root.id,
+            identifiers={(DOMAIN, "ARC-TEST-2026-10:zone:150")},
+            name="Ground Floor LR Entrance Radar",
+            area_id=None,
+        )
+    }
+
+    def _get_child_by_ident(identifier: tuple[str, str], config_entry_id: str):
+        for child in child_store.values():
+            if (
+                child.config_entry_id == config_entry_id
+                and identifier in child.identifiers
+            ):
+                return child
+        return None
+
+    orig_remove = registry.async_remove_device
+
+    def _remove_device(device_id: str) -> None:
+        if device_id in child_store:
+            del child_store[device_id]
+            return
+        orig_remove(device_id)
+
+    def _get_or_create_child(
+        *, config_entry_id: str, parent_device_id: str, identifiers: set, name: str
+    ):
+        ident = next(iter(identifiers))
+        existing = _get_child_by_ident(ident, config_entry_id)
+        if existing is not None and existing.parent_device_id != parent_device_id:
+            raise RuntimeError(
+                f"the child device is already registered with a different parent device {existing.parent_device_id}; reparenting is not supported, remove the child device first"
+            )
+        new_child = SimpleNamespace(
+            id="new_child_150",
+            config_entry_id=config_entry_id,
+            parent_device_id=parent_device_id,
+            identifiers=identifiers,
+            name=name,
+            area_id=None,
+        )
+        child_store[new_child.id] = new_child
+        return new_child
+
+    registry.async_get_child_device_by_identifier = _get_child_by_ident  # type: ignore[attr-defined]
+    registry.async_remove_device = _remove_device  # type: ignore[method-assign]
+    registry.async_get_or_create_child = _get_or_create_child  # type: ignore[method-assign]
+
+    zone = Zone(
+        index=150,
+        name="Ground Floor LR Entrance Radar",
+        classification="multiio_input",
+        is_multiio=True,
+        level1=2,
+        level2=1,
+    )
+    hub = SimpleNamespace(
+        radio_devices={},
+        parents={2: {"name": "MultiIO board 2"}},
+        primary_zones={150: zone},
+    )
+    physical = _register_radio_devices(hass, entry, hub, "ARC-TEST-2026-10")
+    children = _register_multiio_children(
+        hass, entry, hub, "ARC-TEST-2026-10", physical
+    )
+    assert children[150].parent_device_id == physical[2].id
+    assert "stale_child_150" not in child_store
