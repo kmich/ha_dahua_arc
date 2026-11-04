@@ -4,4 +4,6 @@ Report vulnerabilities privately through GitHub's **Report a vulnerability** fea
 
 The integration connects only to the configured local ARC using CGI HTTP digest authentication and DHIP TCP. These protocols are device-provided and are not encrypted. Use a trusted, segmented local network; do not expose the ARC ports to the Internet.
 
-Version 0.2.x is the supported public release line. Security fixes will be published as patch releases when feasible.
+Arm control is off by default. When enabled, Home Assistant can arm and disarm the ARC, so set a code, and treat access to Home Assistant as access to the alarm.
+
+Version 1.0.x is the supported public release line. Security fixes will be published as patch releases when feasible.

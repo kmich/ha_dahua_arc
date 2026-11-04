@@ -16,6 +16,31 @@ The project uses semantic versioning for release tags where practical.
 
 - **Key fob shown as a PIR camera**: after the ARC's peripherals are cleared and re-paired, a device's own `Alarm[]` row can keep the `SenseMethod` of whatever used that slot before. A key fob left as `PIRCam` was exposed as a motion sensor with a snapshot camera. The paired radio's AirFly model now wins for peripherals that are never detectors (key fobs `ARA24`, sirens `ARA13`, repeaters `ARA43`). Those rows are no longer primary zones and get no camera. Setup removes the zone and snapshot entities an earlier build created for them, and logs a warning naming the row.
 
+## [1.0.4] - 2026-11-03
+
+### Fixed
+
+- MultiIO child devices are now found through Home Assistant's child-device registry lookup, so a moved input's existing device is detected.
+
+## [1.0.3] - 2026-11-03
+
+### Fixed
+
+- Device registry lookups use the config-entry-scoped API where Home Assistant provides it, avoiding deprecation warnings.
+
+## [1.0.2] - 2026-11-03
+
+### Fixed
+
+- A MultiIO input that moved to a different board no longer stops setup with `DeviceInfoError`. Home Assistant can't reparent a child device, so it is recreated under the new board.
+
+## [1.0.1] - 2026-11-03
+
+### Added
+
+- Boards that report `MultiIOTransmitter`, as well as `MultiIOTransmitterP`, are discovered.
+- Inputs named as radars get the motion device class.
+
 ## [1.0.0] - 2026-11-02
 
 ### Added
@@ -57,7 +82,7 @@ The project uses semantic versioning for release tags where practical.
 
 ### Added
 
-- **Experimental:** optional arming through a relay-driven keyfob (design and hardware acceptance checklist in `docs/arm-control/06-keyfob-relay.md`). The ARC's own arm command is not available to Home Assistant, but the ARC accepts arm and disarm from a paired keyfob, so with arm control on a new option **How commands are sent** can be set to *Paired keyfob pressed by relays*: choose the Home Assistant `button`, `switch` or `script` entities that press a spare keyfob's Home, Away and (opt-in) Disarm buttons. A whole-system alarm panel then presses them, with the result confirmed from the ARC's own events. One press per command and never a retry; a press with no confirmation fails as unconfirmed and says it may still have worked. Disarm is off by default and keeps the code check, SOS cannot be mapped, an unavailable relay is never pressed, a missing relay entity raises a repair, and diagnostics list the mapped modes without entity ids. The default setting is unchanged: arm control stays off and the integration read-only.
+- **Experimental:** optional arming through a relay-driven keyfob (removed in 0.6.0). The ARC's own arm command is not available to Home Assistant, but the ARC accepts arm and disarm from a paired keyfob, so with arm control on a new option **How commands are sent** can be set to *Paired keyfob pressed by relays*: choose the Home Assistant `button`, `switch` or `script` entities that press a spare keyfob's Home, Away and (opt-in) Disarm buttons. A whole-system alarm panel then presses them, with the result confirmed from the ARC's own events. One press per command and never a retry; a press with no confirmation fails as unconfirmed and says it may still have worked. Disarm is off by default and keeps the code check, SOS cannot be mapped, an unavailable relay is never pressed, a missing relay entity raises a repair, and diagnostics list the mapped modes without entity ids. The default setting is unchanged: arm control stays off and the integration read-only.
 - Internal: the arm controller can issue a command through a sender instead of an RPC, and a new `KeyfobSender` presses one of three mapped buttons once.
 
 ### Changed

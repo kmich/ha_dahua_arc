@@ -2,7 +2,7 @@
 
 Status: **Implemented and Verified on Hardware (v1.0.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with cryptographic PIN authentication.
 
-## What is being built
+## What was built
 
 Opt-in control of the ARC's arm state from Home Assistant:
 
@@ -16,7 +16,7 @@ Opt-in control of the ARC's arm state from Home Assistant:
 - turned off by default, with an optional Home Assistant code for disarm (and,
   if wanted, arm).
 
-Later phases, gated on hardware evidence: forced arm past open zones, the second
+Still gated on hardware evidence: forced arm past open zones, the second
 partial mode (`p2`), and exit/entry-delay states.
 
 ## Read in this order
@@ -24,16 +24,17 @@ partial mode (`p2`), and exit/entry-delay states.
 | # | Document | What it answers |
 |---|---|---|
 | 1 | [01-architecture.md](01-architecture.md) | Components, where the write path lives, threading, the command state machine, sequence diagrams |
-| 2 | [02-protocol.md](02-protocol.md) | What is known about the ARC's arm RPC, what is not, and the **Phase 0 discovery plan** that must run on hardware before any command code is final |
+| 2 | [02-protocol.md](02-protocol.md) | What is known about the ARC's arm RPC, how Phase 0 found `AlarmRegion.setArmMode`, and the hardware evidence |
 | 3 | [03-ha-integration.md](03-ha-integration.md) | Entities, unique IDs, state mapping, options flow, code handling, actions, errors, repairs, diagnostics |
 | 4 | [04-frontend.md](04-frontend.md) | What the user sees: options screens, more-info dialog, dashboard cards (with YAML), error messages, notifications |
 | 5 | [05-implementation-plan.md](05-implementation-plan.md) | Phased work breakdown, file-by-file changes, tests, acceptance criteria, risks |
 
-## Decisions already taken in this design
+Documents 01, 03, 04 and 05 are the design as written before the build. They
+are kept for history, so they describe some finished work as still to do.
 
-These are the design's recommendations. The implementer should follow them
-unless the repository owner says otherwise. Each is argued in the linked
-document.
+## Decisions in this design
+
+Each is argued in the linked document.
 
 | Decision | Choice | Where |
 |---|---|---|
@@ -49,27 +50,18 @@ document.
 | Mixed areas | System panel reports `armed_custom_bypass`, with a `mixed: true` attribute | 03 |
 | Protocol isolation | All RPC knowledge lives in a new HA-independent `protocol/control.py`. One `CommandSpec` holds the verified method name and parameter shape | 01, 02 |
 
-## Open questions for the repository owner
+## How the open questions were settled
 
-1. **Mixed state.** The system panel needs one HA state when areas differ.
-   This design uses `armed_custom_bypass` plus a `mixed` attribute. The
-   alternative is to show the "most armed" state. Confirm the choice.
-2. **Single-area systems.** With one enabled area, this design creates only the
-   system panel, not a duplicate area panel. Confirm.
-3. **Code requirement.** Should enabling arm control *require* a code to be set,
-   or only warn (repair issue) when there is none? This design warns.
-4. **Which ARC user.** Should the docs recommend a dedicated ARC user with
-   arm/disarm rights for Home Assistant, separate from the admin account? This
-   design recommends it but does not enforce it.
-5. **Merge order.** Phases 1–2 can be built and tested against a fake ARC
-   before the hardware evidence exists. Merge them early, with the option
-   showing "not yet supported", or hold them until Phase 0 is done? See
-   05, Phase 2 exit.
+1. **Mixed state.** The system panel reports `armed_custom_bypass` with a
+   `mixed` attribute.
+2. **Single-area systems.** Only the system panel is created.
+3. **Code requirement.** A code isn't required. Without one, a repair issue warns
+   until it is dismissed or a code is set.
 
-## Hard rules for the implementer
+## Standing rules
 
-- Do not ship any command path until Phase 0 has produced hardware evidence
-  (see 02). Building against the `CommandSpec` interface with a fake ARC is fine.
+- Do not ship a new command or mode without hardware evidence (see 02). Building
+  against the `CommandSpec` interface with a fake ARC is fine.
 - Never send an arm/disarm RPC from discovery, diagnostics, setup, reload,
   options, or periodic code. Only a user or automation action may send one.
 - Never retry an arm/disarm RPC automatically after it has been written to the

@@ -1,4 +1,4 @@
-"""Research-only PIRCam still-image camera."""
+"""PIRCam still-image camera."""
 
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 # 01 — Architecture
 
+> **Design document, kept for history.** Arm control shipped in v1.0.0 using `AlarmRegion.setArmMode`. This is the plan it was built from, so parts of it describe work as still to do. For current behavior see the [README](../../README.md); for the protocol see [02-protocol.md](02-protocol.md).
+
 ## 1. Today: a read-only pipeline
 
 ```mermaid

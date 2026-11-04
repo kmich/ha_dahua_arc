@@ -1,5 +1,7 @@
 # 04 — Frontend: what the user sees
 
+> **Design document, kept for history.** Arm control shipped in v1.0.0 using `AlarmRegion.setArmMode`. This is the plan it was built from, so parts of it describe work as still to do. For current behavior see the [README](../../README.md); for the protocol see [02-protocol.md](02-protocol.md).
+
 The integration needs **no custom frontend code**: no custom card, no panel, no
 JavaScript. Everything below is built from Home Assistant's own UI driven by
 standard `alarm_control_panel` entities, config/options flow forms and
@@ -7,7 +9,7 @@ translation strings. "Building the frontend" for this project means getting
 entity features, attributes, form schemas and strings exactly right, and
 shipping documented dashboard YAML.
 
-Entity IDs assume the ARC device is named `ARC3800H` with areas
+Entity IDs assume the ARC device is named `Alarm Panel` with areas
 `Ground floor` and `Upstairs`.
 
 ## 1. Options flow
@@ -80,12 +82,12 @@ Behaviour:
 
 ## 2. Device page
 
-Under **Settings → Devices & services → Dahua ARC → ARC3800H** the panels
+Under **Settings → Devices & services → Dahua ARC → Alarm Panel** the panels
 appear in the **Controls** section above the existing sensors:
 
 ```text
 Controls
-  🛡  ARC3800H                    Disarmed        ← system panel
+  🛡  Alarm Panel                 Disarmed        ← system panel
   🛡  Ground floor                Disarmed        ← area panel (≥2 areas only)
   🛡  Upstairs                    Armed home
 Sensors
@@ -100,7 +102,7 @@ Sensors
 
 ```text
 ┌──────────────────────────────────────┐
-│  ARC3800H                        ⋮ ✕ │
+│  Alarm Panel                     ⋮ ✕ │
 │                                      │
 │            ( 🛡 )                    │
 │           Disarmed                   │
@@ -206,15 +208,17 @@ views:
           - type: heading
             heading: Alarm
           - type: alarm-panel
-            entity: alarm_control_panel.arc3800h
+            entity: alarm_control_panel.alarm_panel
             name: House
             states:
               - arm_home
               - arm_away
           - type: markdown
             content: >-
-              {% set z = state_attr('alarm_control_panel.arc3800h', 'open_zones') or [] %}
-              {% if z %}
+              {% set z = state_attr('alarm_control_panel.alarm_panel', 'open_zones') %}
+              {% if z is none %}
+              Zone state unknown
+              {% elif z %}
               **⚠ Not ready to arm**
 
               {% for zone in z %}- {{ zone }}
@@ -227,30 +231,30 @@ views:
           - type: heading
             heading: Areas
           - type: tile
-            entity: alarm_control_panel.arc3800h_ground_floor
+            entity: alarm_control_panel.alarm_panel_ground_floor
             features:
               - type: alarm-modes
                 modes: [disarmed, armed_home, armed_away]
           - type: tile
-            entity: alarm_control_panel.arc3800h_upstairs
+            entity: alarm_control_panel.alarm_panel_upstairs
             features:
               - type: alarm-modes
                 modes: [disarmed, armed_home, armed_away]
           - type: entities
             entities:
-              - binary_sensor.arc3800h_alarm
-              - binary_sensor.arc3800h_ground_floor_alarm
-              - binary_sensor.arc3800h_upstairs_alarm
-              - sensor.arc3800h_last_arming_failure
+              - binary_sensor.alarm_panel_alarm
+              - binary_sensor.alarm_panel_ground_floor_alarm
+              - binary_sensor.alarm_panel_upstairs_alarm
+              - sensor.alarm_panel_last_arming_failure
       - type: grid
         column_span: 2
         cards:
           - type: logbook
             target:
               entity_id:
-                - alarm_control_panel.arc3800h
-                - alarm_control_panel.arc3800h_ground_floor
-                - alarm_control_panel.arc3800h_upstairs
+                - alarm_control_panel.alarm_panel
+                - alarm_control_panel.alarm_panel_ground_floor
+                - alarm_control_panel.alarm_panel_upstairs
             hours_to_show: 24
 ```
 
@@ -264,7 +268,7 @@ the same attribute for per-area cards.
 
 ### 4.4 Single-area systems
 
-Only `alarm_control_panel.arc3800h` exists. Drop the "Areas" tiles; keep the
+Only `alarm_control_panel.alarm_panel` exists. Drop the "Areas" tiles; keep the
 alarm-panel card, the markdown card and the entities card.
 
 ## 5. Automations (README examples, phase 4)
@@ -281,21 +285,21 @@ triggers:
 actions:
   - action: alarm_control_panel.alarm_arm_away
     target:
-      entity_id: alarm_control_panel.arc3800h
+      entity_id: alarm_control_panel.alarm_panel
     continue_on_error: true
   - delay: "00:00:15"
   - if:
       - condition: not
         conditions:
           - condition: state
-            entity_id: alarm_control_panel.arc3800h
+            entity_id: alarm_control_panel.alarm_panel
             state: armed_away
     then:
       - action: notify.mobile_app_your_phone
         data:
           title: "Alarm NOT armed"
           message: >
-            Open: {{ state_attr('alarm_control_panel.arc3800h', 'open_zones') | join(', ') or 'unknown reason' }}
+            Open: {{ state_attr('alarm_control_panel.alarm_panel', 'open_zones') | join(', ') or 'unknown reason' }}
 ```
 
 `continue_on_error` matters: a refused arm raises an error, which would

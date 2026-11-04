@@ -1,5 +1,7 @@
 # 03 — Home Assistant integration design
 
+> **Design document, kept for history.** Arm control shipped in v1.0.0 using `AlarmRegion.setArmMode`. This is the plan it was built from, so parts of it describe work as still to do. For current behavior see the [README](../../README.md); for the protocol see [02-protocol.md](02-protocol.md).
+
 ## 1. Opt-in
 
 | Constant (`const.py`) | Type | Default | Meaning |
@@ -35,8 +37,8 @@ with the README's "entity is kept" policy. They are not deleted automatically.
 
 | Panel | `unique_id` | Name (`has_entity_name=True`) | Expected `entity_id` |
 |---|---|---|---|
-| System | `{uid}_alarm_panel` | `None` (uses device name) | `alarm_control_panel.arc3800h` |
-| Area | `{uid}_area_{area_id}_alarm_panel` | translation `area_alarm_panel` → `"{area}"` | `alarm_control_panel.arc3800h_ground_floor` |
+| System | `{uid}_alarm_panel` | `None` (uses device name) | `alarm_control_panel.alarm_panel` |
+| Area | `{uid}_area_{area_id}_alarm_panel` | translation `area_alarm_panel` → `"{area}"` | `alarm_control_panel.alarm_panel_ground_floor` |
 
 `{uid}` is `entry_uid(entry)` and `area_id` is `ArmArea.area_id` (one-based),
 the same scheme as the existing `{uid}_area_{area_id}_arm_state`. All panels

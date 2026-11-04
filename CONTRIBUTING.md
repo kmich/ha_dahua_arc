@@ -17,12 +17,14 @@ The production integration is intentionally conservative:
 - local CGI discovery and DHIP state/event handling,
 - wired MultiIO inputs,
 - verified primary wireless sensor inputs,
-- read-only zone state,
+- read-only zone state, arm state, alarm state and line faults,
+- PIRCam snapshots and intrusion media,
+- opt-in arm and disarm through `alarm_control_panel` entities, off by default,
 - Home Assistant config flow, reauthentication, diagnostics, repairs, and area placement.
 
 Do not present a protocol observation as supported behavior until it has repeatable evidence and regression coverage.
 
-In particular, experimental PIRCam / LowRateWPAN work must remain isolated behind the existing research feature gate until it is proven reliable enough for normal Home Assistant use.
+In particular, experimental LowRateWPAN and detector-test work must remain isolated behind the existing research feature gate until it is proven reliable enough for normal Home Assistant use.
 
 ## Development setup
 
@@ -42,7 +44,7 @@ The repository CI also runs Hassfest and HACS validation. Home Assistant 2026.9 
 ## Code layout
 
 - `protocol/` — the Home Assistant-independent CGI/DHIP engine (topology discovery, snapshots, state engine, realtime stream). It must never import `homeassistant`; a test enforces this.
-- `research/` — opt-in PIRCam / LowRateWPAN features, constructed only when research mode is enabled.
+- `research/` — PIRCam media handling, always on, plus the opt-in LowRateWPAN and detector-test features, which are constructed only when research mode is enabled.
 - `vendor/dahua/` — the vendored DHIP transport. Use its public methods (`call`, `send_request`, `recv_fragmented_json`, …) instead of private attributes.
 - `hub.py` — owns the connections and threads; `entity.py` plus the platform modules form the Home Assistant adapter.
 
@@ -76,7 +78,7 @@ Please preserve these invariants unless a migration is explicitly designed and t
 - config-entry identity and reauthentication behavior,
 - user-selected or user-cleared Home Assistant areas,
 - unavailable state semantics,
-- read-only production behavior,
+- read-only behavior unless arm control is enabled, with arm control off by default,
 - the separation between production state and research-only features.
 
 If a compatibility break is genuinely necessary, call it out in the issue and PR before implementation.

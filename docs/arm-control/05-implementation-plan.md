@@ -1,5 +1,7 @@
 # 05 — Implementation plan
 
+> **Design document, kept for history.** Arm control shipped in v1.0.0 using `AlarmRegion.setArmMode`. This is the plan it was built from, so parts of it describe work as still to do. For current behavior see the [README](../../README.md); for the protocol see [02-protocol.md](02-protocol.md).
+
 Five phases. Each ends in a PR that passes the full CI (compile, Ruff, pytest
 with the coverage floor, HA tests, Hassfest, HACS, package check) and leaves the
 integration releasable. Phases 1 and 2 can run while Phase 0 waits on the

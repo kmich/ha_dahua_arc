@@ -13,7 +13,7 @@ For documentation-only or repository-maintenance changes, write **Not applicable
 - [ ] Existing entity `unique_id` values are preserved, or a tested migration is included.
 - [ ] Existing config-entry identity / reauthentication behavior is preserved, or a tested migration is included.
 - [ ] User-selected or user-cleared Home Assistant areas are preserved.
-- [ ] Production behavior remains read-only unless the change has been explicitly discussed.
+- [ ] The integration stays read-only unless arm control is enabled, and no new write path was added unless explicitly discussed.
 - [ ] Research-only behavior remains isolated from production state unless it has been proven and reviewed for promotion.
 
 ## Validation
