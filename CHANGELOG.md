@@ -4,6 +4,12 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
+## [Unreleased]
+
+### Added
+
+- **Fault sensor on wired inputs**: each MultiIO input with its own device gets a diagnostic `Fault` problem sensor, driven live by the ARC's `SensorAbnormal` events, with the raw status (for example `Break`) as an attribute. These events were previously only recorded in the diagnostics catalog, so a line fault that the ARC logs as "Lid was opened" was invisible in Home Assistant. Events are the only source: a fault already active when Home Assistant connects isn't visible, and a fault active across a reconnect reads unknown until its next event. It doesn't change the zone's alarm state or `alarm_triggered`.
+
 ## [1.0.5] - 2026-11-03
 
 ### Fixed

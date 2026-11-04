@@ -28,6 +28,7 @@ from .const import DOMAIN
 from .entity import (
     DahuaArcArmStateEntity,
     DahuaArcEntity,
+    entry_uid,
     radio_device_info,
     root_device_info,
 )
@@ -124,6 +125,14 @@ async def async_setup_entry(
     entities.extend(
         DahuaArcZoneBinarySensor(hub, entry, zone)
         for zone in hub.primary_zones.values()
+    )
+
+    # Wired inputs have no radio health entities, so report line faults here.
+    # Only on a device of their own, where "<device> Fault" names one input.
+    entities.extend(
+        DahuaArcZoneFault(hub, entry, zone)
+        for zone in hub.primary_zones.values()
+        if zone.is_multiio and _device_info_for_zone(hub, entry_uid(entry), zone)[1]
     )
 
     if hub.arming is not None:
@@ -296,6 +305,43 @@ class DahuaArcZoneBinarySensor(DahuaArcEntity, BinarySensorEntity):
             "smart_area_match": self._area_match_name,
             "smart_area_match_score": self._area_match_score,
             "smart_area_match_reason": self._area_match_reason,
+        }
+
+
+class DahuaArcZoneFault(DahuaArcEntity, BinarySensorEntity):
+    """Line or tamper fault on one wired input, from SensorAbnormal events.
+
+    Only events report this, so it reads off until a fault is seen, and a
+    fault already active when Home Assistant connects is not visible.
+    """
+
+    _attr_translation_key = "sensor_fault"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hub: ArcHub, entry: ConfigEntry[ArcHub], zone: Zone):
+        super().__init__(hub, entry)
+        self.zone = zone
+        self._watched_indices = frozenset({zone.index})
+        self._attr_unique_id = f"{self._uid}_zone_{zone.index}_fault"
+        self._attr_device_info = _device_info_for_zone(
+            hub, self._uid, zone, default_name=entry
+        )[0]
+
+    @property
+    def is_on(self) -> bool | None:
+        fault = self.zone.sensor_fault
+        return None if fault is None else bool(fault)
+
+    @property
+    def available(self) -> bool:
+        return self.hub.available
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        return {
+            "alarm_index": self.zone.index,
+            "status": self.zone.sensor_fault or None,
         }
 
 

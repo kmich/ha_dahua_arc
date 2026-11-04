@@ -61,6 +61,60 @@ def test_duplicate_realtime_event_is_counted_without_state_change_callback() -> 
     assert changed == []
 
 
+def test_sensor_abnormal_tracks_fault_without_changing_alarm_state() -> None:
+    zone = Zone(index=9, name="Hall Shutter", active=False)
+    changed: list[set[int]] = []
+    engine = StateEngine({9: zone}, change_callback=changed.append)
+    fault = {
+        "Code": engine_mod.SENSOR_FAULT_EVENT_CODE,
+        "Index": 9,
+        "Data": {"Status": "Break"},
+    }
+
+    engine._apply_event({**fault, "Action": "Start"})
+    assert zone.sensor_fault == "Break"
+    assert zone.active is False
+    assert engine.event_sequence == 0
+    assert changed == [{9}]
+
+    # A repeat changes nothing, and an unknown zone or action is ignored.
+    engine._apply_event({**fault, "Action": "Start"})
+    engine._apply_event({**fault, "Action": "Pulse"})
+    engine._apply_event({**fault, "Index": 99, "Action": "Start"})
+    assert changed == [{9}]
+
+    engine._apply_event({**fault, "Action": "Stop"})
+    assert zone.sensor_fault == ""
+    assert changed == [{9}, {9}]
+
+
+def test_sensor_abnormal_without_status_is_still_a_fault() -> None:
+    zone = Zone(index=9)
+    engine = StateEngine({9: zone})
+    engine._apply_event(
+        {"Code": engine_mod.SENSOR_FAULT_EVENT_CODE, "Index": 9, "Action": "Start"}
+    )
+    assert zone.sensor_fault == "Unknown"
+
+
+def test_new_generation_makes_only_active_faults_unknown() -> None:
+    faulted = Zone(index=1, sensor_fault="Break")
+    clean = Zone(index=2)
+    changed: list[set[int]] = []
+    engine = StateEngine({1: faulted, 2: clean}, change_callback=changed.append)
+
+    engine.begin_generation(1)
+    assert faulted.sensor_fault is None
+    assert clean.sensor_fault == ""
+    assert changed == [{1}]
+
+    # The next event resolves it either way.
+    engine._apply_event(
+        {"Code": engine_mod.SENSOR_FAULT_EVENT_CODE, "Index": 1, "Action": "Stop"}
+    )
+    assert faulted.sensor_fault == ""
+
+
 def test_snapshot_rejects_stale_values_after_newer_event() -> None:
     zone = Zone(index=4, name="Office PIR", classification="motion")
     engine = StateEngine({4: zone})

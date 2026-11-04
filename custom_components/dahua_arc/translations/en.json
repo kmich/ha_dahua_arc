@@ -216,6 +216,9 @@
       "tamper": {
         "name": "Tamper"
       },
+      "sensor_fault": {
+        "name": "Fault"
+      },
       "alarm": {
         "name": "Alarm",
         "state": {
