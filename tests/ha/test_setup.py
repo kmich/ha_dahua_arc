@@ -27,7 +27,13 @@ from custom_components.dahua_arc.diagnostics import async_get_config_entry_diagn
 from custom_components.dahua_arc.entity import root_device_info
 from custom_components.dahua_arc.vendor.dahua.exceptions import LoginError
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, STATE_OFF
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    STATE_OFF,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -464,6 +470,52 @@ async def test_phantom_cleanup_only_removes_placeholders_and_peripherals(
     assert _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{KEYFOB}") is None
     # ...but a real input missing from this startup's snapshot is preserved.
     assert _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{OFFLINE_DOOR}")
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wired_zone_fault_sensor_follows_sensor_abnormal_events(
+    hass: HomeAssistant,
+) -> None:
+    entry = _entry(hass)
+    hub = make_hub()
+    await _setup(hass, entry, hub)
+
+    fault_id = _entity_id(
+        hass, "binary_sensor", f"{SERIAL}_zone_{KITCHEN_WINDOW}_fault"
+    )
+    assert fault_id is not None
+    assert er.async_get(hass).async_get(fault_id).entity_category == "diagnostic"
+    assert hass.states.get(fault_id).state == STATE_OFF
+    # Wireless zones keep their radio health entities instead.
+    assert (
+        _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{HALL_PIRCAM}_fault") is None
+    )
+
+    zone_id = _entity_id(hass, "binary_sensor", f"{SERIAL}_zone_{KITCHEN_WINDOW}")
+    zone_state = hass.states.get(zone_id).state
+    event = {
+        "Code": "SensorAbnormal",
+        "Index": KITCHEN_WINDOW,
+        "Data": {"Status": "Break"},
+    }
+    hub.engine._apply_event({**event, "Action": "Start"})
+    await hass.async_block_till_done()
+    state = hass.states.get(fault_id)
+    assert state.state == "on"
+    assert state.attributes["status"] == "Break"
+    assert hass.states.get(zone_id).state == zone_state
+    assert hub.diagnostics()["zone_states"][KITCHEN_WINDOW]["sensor_fault"] == "Break"
+
+    # A fault active across a reconnect may have ended unseen.
+    hub.engine.begin_generation(2)
+    await hass.async_block_till_done()
+    assert hass.states.get(fault_id).state == STATE_UNKNOWN
+
+    hub.engine._apply_event({**event, "Action": "Stop"})
+    await hass.async_block_till_done()
+    state = hass.states.get(fault_id)
+    assert state.state == STATE_OFF
+    assert state.attributes["status"] is None
     await hass.config_entries.async_unload(entry.entry_id)
 
 

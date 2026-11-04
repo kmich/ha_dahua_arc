@@ -620,6 +620,7 @@ class ArcHub:
                     "active": z.active,
                     "tamper": z.tamper,
                     "low_power": z.low_power,
+                    "sensor_fault": z.sensor_fault,
                     "last_source": z.last_source,
                     "last_action": z.last_action,
                 }

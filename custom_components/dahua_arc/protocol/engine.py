@@ -25,6 +25,8 @@ _LOGGER = logging.getLogger(__name__)
 EVENT_CODE = "AlarmInputSourceSignal"
 PIRCAM_EVENT_CODE = ALARM_EVENT
 PIRCAM_MOTION_HOLD_SECONDS = 5.0
+# Line/tamper faults on an input: Start/Stop with Data.Status such as "Break".
+SENSOR_FAULT_EVENT_CODE = "SensorAbnormal"
 
 
 class StateEngine:
@@ -64,10 +66,19 @@ class StateEngine:
     def begin_generation(self, generation: int) -> None:
         with self.lock:
             self.current_generation = generation
+            # Faults are events only too. One active while detached may have
+            # ended unseen, so it is unknown again until its next event.
+            stale_faults = {
+                idx for idx, zone in self.zones.items() if zone.sensor_fault
+            }
+            for idx in stale_faults:
+                self.zones[idx].sensor_fault = None
         # Arm changes are events only; any missed while detached would leave
         # a stale arm state, so it is unknown again until the next change.
         if self.arming is not None:
             self.arming.invalidate()
+        if stale_faults and self.change_callback:
+            self.change_callback(stale_faults)
 
     def enqueue_event(self, generation: int, event: dict[str, Any]) -> None:
         self.event_queue.put((generation, event))
@@ -165,6 +176,9 @@ class StateEngine:
         code = str(event.get("Code") or "")
         if code in TRACKED_EVENT_CODES and self.arming is not None:
             self.arming.apply_event(event)
+        if code == SENSOR_FAULT_EVENT_CODE:
+            self._apply_sensor_fault(event)
+            return
         # AlarmLocal is both an alarm and, for a PIRCam, its motion signal.
         if code not in (EVENT_CODE, PIRCAM_EVENT_CODE):
             return
@@ -262,6 +276,23 @@ class StateEngine:
 
         if changed_indices and self.change_callback:
             self.change_callback(changed_indices)
+
+    def _apply_sensor_fault(self, event: dict[str, Any]) -> None:
+        """Track a SensorAbnormal fault without touching the zone's alarm state."""
+        idx, action = safe_int(event.get("Index")), event.get("Action")
+        if idx is None or action not in ("Start", "Stop"):
+            return
+        data = event.get("Data")
+        status = str(data.get("Status") or "") if isinstance(data, dict) else ""
+        new_fault = (status or "Unknown") if action == "Start" else ""
+        with self.lock:
+            self.realtime_events_received += 1
+            zone = self.zones.get(idx)
+            if zone is None or zone.sensor_fault == new_fault:
+                return
+            zone.sensor_fault = new_fault
+        if self.change_callback:
+            self.change_callback({idx})
 
     def apply_wpan_motion(self, idx: int, active: bool, source: str) -> None:
         """Apply a validated LowRateWPAN PIR-camera alarm-state transition.

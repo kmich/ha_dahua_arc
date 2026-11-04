@@ -25,6 +25,8 @@ class Zone:
     raw_alarm_state: int | None = None
     tamper: int | None = None
     low_power: int | None = None
+    # SensorAbnormal status ("Break", ...), "" when none, None when unknown.
+    sensor_fault: str | None = ""
     active: bool | None = None
     parent_sn: str = ""
     event_exchannel: int | None = None
