@@ -1,6 +1,7 @@
 {
   "domain": "dahua_arc",
   "name": "Dahua ARC",
+  "categories": ["security_safety.alarm_systems"],
   "codeowners": ["@kmich"],
   "config_flow": true,
   "documentation": "https://github.com/kmich/ha_dahua_arc",

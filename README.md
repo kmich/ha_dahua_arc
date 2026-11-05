@@ -21,7 +21,7 @@ In default operation without arm control enabled, the integration runs read-only
 
 ## Installation
 
-This repository targets Home Assistant 2026.9+ and Python 3.14. Add `https://github.com/kmich/ha_dahua_arc` to HACS as a custom **Integration** repository, or install manually by copying `custom_components/dahua_arc` into the Home Assistant configuration's `custom_components` directory. Restart Home Assistant, then use **Settings → Devices & services → Add integration → Dahua ARC**. The ARC should be reachable only over a trusted LAN.
+This repository targets Home Assistant 2026.9+ and Python 3.14. On Home Assistant 2026.11 and newer, open **Settings → Marketplace**, choose **Add from link** and enter `https://github.com/kmich/ha_dahua_arc`. Home Assistant 2026.9 and 2026.10 can add it to HACS as a custom **Integration** repository. You can also install manually by copying `custom_components/dahua_arc` into the Home Assistant configuration's `custom_components` directory. Restart Home Assistant, then use **Settings → Devices & services → Add integration → Dahua ARC**. The ARC should be reachable only over a trusted LAN.
 
 Use a release package only after its CI checks have passed. Back up Home Assistant before upgrading an existing installation, and restart Home Assistant after upgrading: reloading the integration keeps the old code loaded. The integration preserves legacy entity unique IDs based on the existing config-entry ID while recording the physical serial for future identity checks. New installations require a reported ARC serial and use it as the config-entry unique ID.
 
