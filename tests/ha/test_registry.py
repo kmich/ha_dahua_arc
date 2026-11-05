@@ -19,7 +19,7 @@ from custom_components.dahua_arc.protocol.models import Zone
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 
 async def test_multiio_child_is_under_physical_parent_and_preserves_manual_area(

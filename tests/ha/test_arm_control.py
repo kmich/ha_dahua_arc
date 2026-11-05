@@ -41,7 +41,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 from tests.fake_arc import ARM_METHOD, FakeArc
 from tests.hub_factory import KITCHEN_WINDOW, SERIAL, make_hub
 

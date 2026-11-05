@@ -4,6 +4,14 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
+## [Unreleased]
+
+### Changed
+
+- Tests run on the official `pytest-homeassistant` plugin, because `pytest-homeassistant-custom-component` is superseded and stops at Home Assistant 2026.10.
+- Manifest declares the integration category (`security_safety.alarm_systems`) used by the Home Assistant Marketplace in 2026.11.
+- README describes installing from the Marketplace on Home Assistant 2026.11 and newer.
+
 ## [1.0.6] - 2026-11-04
 
 ### Added
