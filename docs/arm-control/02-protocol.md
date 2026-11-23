@@ -1,9 +1,11 @@
 # 02 — Protocol: known facts, unknowns, and Phase 0 discovery
 
 The integration's protocol knowledge is evidence-based (see `CONTRIBUTING.md`).
-The arm/disarm **command** has never been observed on this firmware. This
-document separates what is verified from what is assumed, and defines the
-discovery work that must come before any command code is final.
+`AlarmRegion.setArmMode` was traced from Dahua NetSDK and verified on ARC3800H
+hardware in [§2d](#2d-resolution--hardware-verification-2026-11-02) (with
+`detail.armOptions.profile = "Force"` added in `v1.1.0` from Dahua's 2026 NetSDK;
+live ARC3800H confirmation pending). Sections 1–2c and 3–4 preserve the Phase 0
+discovery history.
 
 ## 1. Verified on ARC3800H hardware (already used by the read path)
 
@@ -145,19 +147,41 @@ By disassembling Dahua NetSDK (`dhnetsdk.dll` / `avnetsdk.dll`) using Capstone, 
   {
     "pwd": "<base64-encoded user PIN or device password>",
     "mode": "D" | "p1" | "T" | "p2",
-    "areas": [1, 2, ..., 32]
+    "areas": [1, 2, ..., 32],
+    "detail": {
+      "armOptions": {
+        "profile": "Force",
+        "triggerMode": "Remote",
+        "id": 0,
+        "name": "",
+        "clientAddress": ""
+      }
+    }
   }
   ```
+  The `detail.armOptions` object is optional and is included when force-arming past open zones (`profile: "Force"`), as traced in Dahua's 2026 `DoLynkInstaller\RemoteControl\dhnetsdk.dll` request serializer (`0x109c8b60`) and `DoLynk+Developer+Document.zip` (`armOptions.profile=Force`).
 - **Reply payload**:
   ```json
   {
     "result": true,
     "params": {
       "armResult": 0,
-      "detail": []
+      "detail": [
+        {
+          "Area": 1,
+          "AlarmSource": [191],
+          "ZoneAbnormal": [
+            {"Index": 191, "Name": "Office Window", "Reason": "Open"}
+          ]
+        }
+      ],
+      "DeviceFault": [
+        {"Name": "Hub", "Reason": "NoGSM"}
+      ]
     }
   }
   ```
+  Reply parsing of `detail[].ZoneAbnormal[]` (`Index`, `Name`, `Reason`), `detail[].AlarmSource[]`, and `DeviceFault[]` (`Name`, `Reason`) matches the `AlarmRegion.setArmMode` response parser in `DoLynkInstaller\RemoteControl\dhnetsdk.dll` (`0x109c0e40`).
 
 ### Why Previous Trials Failed:
 1. **The `AreaArmMode` Table Lock (`error 289407505`)**:
@@ -172,6 +196,9 @@ By disassembling Dahua NetSDK (`dhnetsdk.dll` / `avnetsdk.dll`) using Capstone, 
   - Area 17 ("Swimming pool") armed (`p1`) and disarmed (`D`) successfully with `armResult: 0`.
   - Whole-system disarm with `areas: [1..17]` successfully confirmed with `armResult: 0`.
   - Authoritative `AreaArmModeChange` events generated immediately without errors.
+- Traced from Dahua 2026 `DoLynkInstaller\RemoteControl\dhnetsdk.dll` and DoLynk Developer Documentation (read-only panel checks on the owner's ARC3800H show `"SupportArmProfile": true` in `AlarmRegion.getCaps` and `"ArmingWithFault": {"Enable": true}` in `AreaArmMode`; live force-arm hardware testing pending):
+  - `detail.armOptions.profile = "Force"` for bypassing open zones when arming.
+  - `detail[].ZoneAbnormal[]`, `detail[].AlarmSource[]`, and `DeviceFault[]` reply parsing.
 
 ## 3. Candidate methods (hypotheses, unverified)
 
@@ -264,18 +291,19 @@ Trial matrix (one test area, everyone informed, siren-safe conditions):
 run. This becomes the "Hardware / protocol evidence" section of the
 implementation PR.
 
-### Evidence table filled in from ARC3800H hardware verification (2026-11-01)
+### Active evidence table (`AlarmRegion.setArmMode`)
 
-| Item | Value | Verified on hardware |
+| Item | Value | Verification |
 |---|---|---|
-| Arm / Disarm method | `configManager.setConfig` | Yes (confirmed `result: true`) |
-| Target config name | `"AreaArmMode"` | Yes |
-| Instance service? | `False` (static RPC) | Yes |
-| Params shape | `{"name": "AreaArmMode", "table": [{"Mode": "<mode>"}, ... (32 items)]}` | Yes |
-| Mode codes | `D` Disarmed, `p1` Home/Stay, `T` Away | Yes |
-| Password/PIN in RPC params? | Not required (uses authenticated DHIP session) | Yes |
-| Success reply | `{"id": <id>, "params": {"options": null}, "result": true}` | Yes |
-| Fragmentation | `fragmented=True` | Yes |
+| Arm / Disarm method | `AlarmRegion.setArmMode` | Verified on ARC3800H hardware (`v1.0.0`) |
+| Instance service? | `False` (static RPC) | Verified on hardware |
+| Params shape | `{"pwd": "<b64>", "mode": "<mode>", "areas": [1..32]}` plus optional `"detail": {"armOptions": {"profile": "Force", "triggerMode": "Remote", "id": 0, "name": "", "clientAddress": ""}}` | Core fields verified on hardware; `detail.armOptions` (`profile: "Force"`) traced from 2026 `dhnetsdk.dll` + DoLynk docs (live force-arm test pending) |
+| Mode codes | `D` Disarmed, `p1` Home/Stay, `T` Away | Verified on hardware (`p2` unverified) |
+| Password/PIN in RPC params? | Required (`pwd`: ASCII Base64 user PIN or device password) | Verified on hardware |
+| Success / refusal reply | `{"result": true, "params": {"armResult": 0}}`; refusal carries `armResult != 0`, `detail[].ZoneAbnormal[]` / `AlarmSource[]`, and optional `DeviceFault[]` | `armResult: 0` verified on hardware; `ZoneAbnormal`/`DeviceFault` parser traced from 2026 `dhnetsdk.dll` |
+| Fragmentation | `fragmented=False` | Verified on hardware |
+
+> **Note:** An earlier 2026-11-01 trial (`CONFIG_MANAGER_COMMAND_SPEC`) used `configManager.setConfig` targeting `AreaArmMode`, which was superseded by `AlarmRegion.setArmMode` because the ARC3800H firmware locks `AreaArmMode` config-table writes with `error 289407505: System Arming`.
 
 ## 5. `CommandSpec`: where the evidence goes
 
@@ -283,10 +311,10 @@ All of the above lands in one object in `protocol/control.py`:
 
 ```python
 ARM_COMMAND_SPEC = CommandSpec(
-    method="configManager.setConfig",
+    method="AlarmRegion.setArmMode",
     needs_instance=False,
-    build_params=_build_config_manager_params,
-    parse_reply=_config_manager_parse_reply,
+    build_params=_build_alarm_region_params,
+    parse_reply=_alarm_region_parse_reply,
 )
 ```
 

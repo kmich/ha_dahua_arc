@@ -1,0 +1,7 @@
+{
+  "services": {
+    "arm": {
+      "service": "mdi:shield-lock"
+    }
+  }
+}

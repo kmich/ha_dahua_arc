@@ -1,5 +1,7 @@
 # Dahua ARC for Home Assistant
 
+[![Open your Home Assistant instance and open a repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=kmich&repository=ha_dahua_arc&category=integration)
+
 Local-only Home Assistant integration for Dahua ARC alarm controllers (ARC3800H series). It provides full local zone observability and native alarm panel arm/disarm control using direct DHIP TCP/5000 protocol communication and local CGI table discovery. No cloud or SIA receiver dependency is required.
 
 In default operation without arm control enabled, the integration runs read-only. When arm control is enabled, Home Assistant provides whole-system and per-area `alarm_control_panel` entities with PIN verification.
@@ -21,7 +23,7 @@ In default operation without arm control enabled, the integration runs read-only
 
 ## Installation
 
-This repository targets Home Assistant 2026.9+ and Python 3.14. On Home Assistant 2026.11 and newer, open **Settings → Marketplace**, choose **Add from link** and enter `https://github.com/kmich/ha_dahua_arc`. Home Assistant 2026.9 and 2026.10 can add it to HACS as a custom **Integration** repository. You can also install manually by copying `custom_components/dahua_arc` into the Home Assistant configuration's `custom_components` directory. Restart Home Assistant, then use **Settings → Devices & services → Add integration → Dahua ARC**. The ARC should be reachable only over a trusted LAN.
+This repository targets Home Assistant 2026.9+ and Python 3.14. On Home Assistant 2026.11 and newer, click the **Open repository in Marketplace** badge above (or open **Settings → Marketplace**, choose **Add from link**, and enter `https://github.com/kmich/ha_dahua_arc`). Home Assistant 2026.9 and 2026.10 can add it to HACS as a custom **Integration** repository. You can also install manually by copying `custom_components/dahua_arc` into the Home Assistant configuration's `custom_components` directory. Restart Home Assistant, then use **Settings → Devices & services → Add integration → Dahua ARC**. The ARC should be reachable only over a trusted LAN.
 
 Use a release package only after its CI checks have passed. Back up Home Assistant before upgrading an existing installation, and restart Home Assistant after upgrading: reloading the integration keeps the old code loaded. The integration preserves legacy entity unique IDs based on the existing config-entry ID while recording the physical serial for future identity checks. New installations require a reported ARC serial and use it as the config-entry unique ID.
 
@@ -73,7 +75,7 @@ Arm control is off by default. When it is enabled in the integration options, Ho
 - **Whole-System & Per-Area Control**: Arm Home, Arm Away, and Disarm the whole system in a single action without zone selection, or control individual areas separately.
 - **PIN Code Authentication**: Arming and disarming actions pass the verified PIN code through to the native panel RPC. Disarm (and optionally arm) can be strictly PIN-gated using Home Assistant's built-in PBKDF2/SHA-256 hash checks with attempt rate limiting and lockout.
 - **Authoritative Event Confirmation**: State transitions are confirmed by the ARC's own `AreaArmModeChange` events rather than assuming success from the RPC reply.
-- **Open-Zone Readiness & Blocking**: When an arm command is blocked by open or faulted zones, the integration reports the open zones.
+- **Open-Zone Readiness & Force Arming**: When an arm command is blocked by open or faulted zones, the integration reports the open zones. Enable **Force-arm past open zones** in the arm-control options if standard **Arm home** and **Arm away** actions should arm past open zones using Dahua's NetSDK `detail.armOptions` (`profile: "Force"`; the ARC marks those areas as forced and bypasses the open zones until disarmed), or call the `dahua_arc.arm` entity action (`mode`, `force`, `code`) on demand in dashboards and automations.
 
 ### Arm card
 
@@ -116,6 +118,19 @@ features:
       - armed_away
 ```
 
+### Force-arm action
+
+To force-arm past open doors or windows on demand without changing the default **Force-arm past open zones** option, call the `dahua_arc.arm` entity action (`code` is optional unless **Require the code to arm** is enabled):
+
+```yaml
+action: dahua_arc.arm
+target:
+  entity_id: alarm_control_panel.alarm_panel
+data:
+  mode: home
+  force: true
+```
+
 The fuller dashboard example is in [docs/arm-control/04-frontend.md](docs/arm-control/04-frontend.md).
 
 ## Wireless PIRs and PIRCam observability
@@ -151,7 +166,7 @@ Besides arm control, the detector-test buttons are the only feature that **write
 
 ## Development checks
 
-The main CI runs Python 3.14 compile, Ruff (including security and async rules), protocol unit tests, end-to-end tests against an in-process fake ARC that speaks DHIP, Home Assistant 2026.9 runtime/platform/config-flow tests, Hassfest, HACS validation and package checks. A coverage floor is enforced (see `pyproject.toml`). The release workflow reuses the same validation. A passing CI run does not replace an on-hardware soak test for the ARC3800H.
+The main CI runs Python 3.14 compile, Ruff (including security and async rules), protocol unit tests, end-to-end tests against an in-process fake ARC that speaks DHIP, Home Assistant runtime/platform/config-flow tests, Hassfest, HACS validation and package checks. A coverage floor is enforced (see `pyproject.toml`). The release workflow reuses the same validation. A passing CI run does not replace an on-hardware soak test for the ARC3800H.
 
 Code layout: `protocol/` holds the Home Assistant-independent CGI/DHIP engine, `research/` holds the PIRCam media handling (always on) and the opt-in LowRateWPAN and detector-test features, `hub.py` ties them together, and the platform modules plus `entity.py` form the Home Assistant adapter.
 

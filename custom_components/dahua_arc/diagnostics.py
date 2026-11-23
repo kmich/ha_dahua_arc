@@ -14,6 +14,7 @@ from .const import (
     CONF_CODE_ARM_REQUIRED,
     CONF_CODE_DISARM_REQUIRED,
     CONF_ENABLE_ARM_CONTROL,
+    CONF_FORCE_ARM,
     CONF_ZONE_AREA_OWNERSHIP,
 )
 
@@ -39,6 +40,7 @@ async def async_get_config_entry_diagnostics(
             "code_disarm_required": entry.options.get(CONF_CODE_DISARM_REQUIRED),
             "code_arm_required": entry.options.get(CONF_CODE_ARM_REQUIRED),
             "modes": entry.options.get(CONF_ARM_MODES),
+            "force_arm": bool(entry.options.get(CONF_FORCE_ARM, False)),
         },
         "area_ownership": dict(entry.options.get(CONF_ZONE_AREA_OWNERSHIP, {})),
         "runtime": entry.runtime_data.diagnostics(),

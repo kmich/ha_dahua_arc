@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
+import voluptuous as vol
 from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntity,
     AlarmControlPanelEntityFeature,
@@ -19,6 +20,7 @@ from homeassistant.components.alarm_control_panel import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_platform
 
 try:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -37,10 +39,12 @@ from .const import (
     CONF_CODE_ARM_REQUIRED,
     CONF_CODE_DISARM_REQUIRED,
     CONF_ENABLE_ARM_CONTROL,
+    CONF_FORCE_ARM,
     DEFAULT_ARM_MODES,
     DEFAULT_CODE_ARM_REQUIRED,
     DEFAULT_CODE_DISARM_REQUIRED,
     DEFAULT_ENABLE_ARM_CONTROL,
+    DEFAULT_FORCE_ARM,
     DOMAIN,
     VERIFIED_ARM_MODES,
 )
@@ -68,6 +72,17 @@ PARALLEL_UPDATES = 0
 HOME_ASSISTANT = "Home Assistant"
 BAD_PASSWORD_CODE = 268632080  # DAHUA_ERRORS: invalid device password
 NO_PERMISSION_CODE = 268894210  # DAHUA_ERRORS: insufficient permissions
+
+SERVICE_ARM = "arm"
+_SERVICE_ARM_MODES: dict[str, ArmMode] = {
+    "home": "p1",
+    "away": "T",
+}
+_ARM_SERVICE_SCHEMA = {
+    vol.Required("mode"): vol.In(tuple(_SERVICE_ARM_MODES)),
+    vol.Optional("force", default=False): bool,
+    vol.Optional("code"): str,
+}
 
 _STATE_MAP = {
     DISARMED: AlarmControlPanelState.DISARMED,
@@ -135,6 +150,12 @@ async def async_setup_entry(
     if len(areas) > 1:
         entities.extend(DahuaArcAreaPanel(hub, entry, area) for area in areas)
     async_add_entities(entities)
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_ARM,
+        _ARM_SERVICE_SCHEMA,
+        "async_arm",
+    )
 
 
 class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
@@ -171,6 +192,7 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         self._modes = [m for m in VERIFIED_ARM_MODES if m in modes] or list(
             DEFAULT_ARM_MODES
         )
+        self._force_arm = bool(entry.options.get(CONF_FORCE_ARM, DEFAULT_FORCE_ARM))
         self._limiter = arm_code.AttemptLimiter()
         self._last_command: dict[str, Any] | None = None
         self._ha_event_seq: int | None = None
@@ -239,13 +261,20 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
     # -- commands ----------------------------------------------------------
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
-        await self._async_command("D", code, disarm=True)
+        await self._async_command("D", code, disarm=True, force=False)
 
     async def async_alarm_arm_home(self, code: str | None = None) -> None:
-        await self._async_command("p1", code, disarm=False)
+        await self._async_command("p1", code, disarm=False, force=self._force_arm)
 
     async def async_alarm_arm_away(self, code: str | None = None) -> None:
-        await self._async_command("T", code, disarm=False)
+        await self._async_command("T", code, disarm=False, force=self._force_arm)
+
+    async def async_arm(
+        self, *, mode: str, force: bool = False, code: str | None = None
+    ) -> None:
+        await self._async_command(
+            _SERVICE_ARM_MODES[mode], code, disarm=False, force=force
+        )
 
     async def _async_check_code(self, code: str | None, *, disarm: bool) -> None:
         """Gate the command in Home Assistant. Nothing reaches the ARC on failure."""
@@ -272,7 +301,7 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         return f"ha:{context.id}" if context is not None else ""
 
     async def _async_command(
-        self, mode: ArmMode, code: str | None, *, disarm: bool
+        self, mode: ArmMode, code: str | None, *, disarm: bool, force: bool = False
     ) -> None:
         controller = self.hub.arm_control
         if not self.available or controller is None:
@@ -288,6 +317,7 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         command = ArmCommand(
             mode=mode,
             areas=self._target,
+            force=bool(force) and not disarm,
             origin=self._context_id(),
             code=str(code or "").strip(),
         )
@@ -304,6 +334,7 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
         self._last_command = {
             "at": result.finished_at,
             "mode": result.command.mode,
+            "force": result.command.force,
             "outcome": result.outcome.value,
             "confirmed_by": result.confirmed_by,
             "error": result.reason or result.rpc_error_message,
@@ -314,11 +345,31 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
     def _area_names(self) -> str:
         return ", ".join(area.name for area in self._areas)
 
+    def _zone_label(self, zone_info: dict[str, Any]) -> str | None:
+        raw_zone = zone_info.get("zone")
+        if isinstance(raw_zone, str):
+            stripped = raw_zone.strip()
+            if stripped:
+                return stripped
+        idx = zone_info.get("zone_index")
+        if idx is None and isinstance(raw_zone, int) and not isinstance(raw_zone, bool):
+            idx = raw_zone
+        if isinstance(idx, int) and not isinstance(idx, bool):
+            zone = self.hub.zones.get(idx) or self.hub.zones.get(idx - 1)
+            if zone is not None:
+                return zone.name
+            return f"Zone {idx}"
+        return None
+
     def _exception(self, result: CommandResult, wait_timeout: float) -> Exception:
         outcome, reason = result.outcome, result.reason
         if outcome is CommandOutcome.REFUSED:
             zones = sorted(
-                {zone["zone"] for zone in result.open_zones if zone.get("zone")}
+                {
+                    label
+                    for zone in result.open_zones
+                    if (label := self._zone_label(zone)) is not None
+                }
             )
             if zones:
                 return _error(

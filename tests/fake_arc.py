@@ -245,14 +245,20 @@ class FakeArc:
         return f"Area {index + 1}"
 
     def _arm_event(
-        self, code: str, index: int, mode: str, *, abnormal: dict | None = None
+        self,
+        code: str,
+        index: int,
+        mode: str,
+        *,
+        profile: str = "Auto",
+        abnormal: dict | None = None,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {
             "EventOptions": {"EventType": "ArmOrDisarm"},
             "IsGlobal": index < 0,
             "Mode": mode,
             "Name": "FAKE",
-            "Profile": "Auto",
+            "Profile": profile,
             "TriggerMode": "Remote",
         }
         if index >= 0:
@@ -273,13 +279,18 @@ class FakeArc:
             ]
         }
 
-    def _emit_arm_events(self, mode: str, areas: list[int], *, failed: bool) -> None:
+    def _emit_arm_events(
+        self, mode: str, areas: list[int], *, failed: bool, forced: bool = False
+    ) -> None:
         total = len(self.area_modes())
         suffix = "ArmingFailure" if failed else "AreaArmModeChange"
-        abnormal = self._abnormal(areas) if failed else None
+        profile = "Force" if (not failed and forced) else "Auto"
+        abnormal = self._abnormal(areas) if (failed or forced) else None
         if len(areas) == total and total > 1:
             self.push_event(
-                self._arm_event(f"Global{suffix}", -1, mode, abnormal=abnormal)
+                self._arm_event(
+                    f"Global{suffix}", -1, mode, profile=profile, abnormal=abnormal
+                )
             )
         for index in areas:
             self.push_event(
@@ -287,7 +298,8 @@ class FakeArc:
                     suffix,
                     index,
                     mode,
-                    abnormal=self._abnormal([index]) if failed else None,
+                    profile=profile,
+                    abnormal=self._abnormal([index]) if (failed or forced) else None,
                 )
             )
 
@@ -301,7 +313,8 @@ class FakeArc:
                 "result": False,
                 "error": {"code": self.arm_error_code, "message": "No permission"},
             }, 1
-        refuse = bool(self.open_zones) and mode != "D"
+        force = bool(params.get("Force")) and mode != "D"
+        refuse = bool(self.open_zones) and mode != "D" and not force
         if refuse and self.arm_reply == "refused":
             return {
                 "result": False,
@@ -311,14 +324,15 @@ class FakeArc:
                     "data": {"Abnormal": self._abnormal(areas)},
                 },
             }, 1
-        self._apply_arm(mode, areas)
+        forced = bool(self.open_zones) and force
+        self._apply_arm(mode, areas, forced=forced)
         if self.arm_reply == "no_reply":
             return None, 0
         return {"result": True}, 1
 
-    def _apply_arm(self, mode: str, areas: list[int]) -> bool:
+    def _apply_arm(self, mode: str, areas: list[int], *, forced: bool = False) -> bool:
         """Apply an arm like the ARC does; returns True when it was refused."""
-        refuse = bool(self.open_zones) and mode != "D"
+        refuse = bool(self.open_zones) and mode != "D" and not forced
         if self.arm_takes_effect and not refuse:
             rows = self.config_tables["AreaArmMode"]["Areas"]
             for index in areas:
@@ -328,7 +342,7 @@ class FakeArc:
                 self.arm_delay,
                 self._emit_arm_events,
                 args=(mode, areas),
-                kwargs={"failed": refuse},
+                kwargs={"failed": refuse, "forced": forced and not refuse},
             )
             timer.daemon = True
             self._timers.append(timer)
@@ -453,6 +467,7 @@ class FakeArc:
                 return {"result": False, "error": {"code": 268959743}}, 1
             return {"result": True, "params": {"table": table}}, 2
         if method == "AlarmRegion.setArmMode":
+            self.arm_requests.append(params)
             mode = params.get("mode", "D") if isinstance(params, dict) else "D"
             areas = (
                 [a - 1 for a in params.get("areas", [])]
@@ -467,17 +482,34 @@ class FakeArc:
                         "message": "No permission",
                     },
                 }, 1
-            refuse = bool(self.open_zones) and mode != "D"
+            arm_options = (
+                ((params.get("detail") or {}).get("armOptions") or {})
+                if isinstance(params, dict)
+                else {}
+            )
+            force = arm_options.get("profile") == "Force" and mode != "D"
+            refuse = bool(self.open_zones) and mode != "D" and not force
             if refuse and self.arm_reply == "refused":
                 detail = [
-                    {"Area": a + 1, "AlarmSource": [z["zone"] for z in self.open_zones]}
+                    {
+                        "Area": a + 1,
+                        "AlarmSource": [
+                            z.get("Index", z.get("zone")) for z in self.open_zones
+                        ],
+                        "ZoneAbnormal": [
+                            dict(z)
+                            for z in self.open_zones
+                            if isinstance(z, dict) and "Name" in z
+                        ],
+                    }
                     for a in areas
                 ]
                 return {
                     "result": True,
-                    "params": {"armResult": 1001, "detail": detail},
+                    "params": {"armResult": 1, "detail": detail},
                 }, 1
-            self._apply_arm(mode, areas)
+            forced = bool(self.open_zones) and force
+            self._apply_arm(mode, areas, forced=forced)
             if self.arm_reply == "no_reply":
                 return None, 0
             return {"result": True, "params": {"armResult": 0}}, 1

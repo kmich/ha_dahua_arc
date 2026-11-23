@@ -375,6 +375,7 @@ async def test_the_code_is_stored_only_as_a_hash(hass: HomeAssistant) -> None:
     assert data["code_disarm_required"] is True
     assert data["code_arm_required"] is False
     assert data["arm_modes"] == ["armed_home", "armed_away"]
+    assert data["force_arm"] is False
 
 
 async def test_setting_a_code_clears_the_no_code_acknowledgement(
@@ -452,3 +453,19 @@ async def test_arm_control_step_chains_into_area_matching(
         result["flow_id"], {**ARM_FORM, "acknowledge_control": True}
     )
     assert result["step_id"] == "area_match"
+
+
+async def test_force_arm_option_defaults_false_and_persists_true(
+    hass: HomeAssistant,
+) -> None:
+    entry = _options_entry(hass)
+    result = await _to_arm_step(hass, entry)
+    assert _schema_defaults(result)["force_arm"] is False
+
+    saved = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**ARM_FORM, "force_arm": True, "acknowledge_control": True},
+    )
+    await hass.async_block_till_done()
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert saved["data"]["force_arm"] is True

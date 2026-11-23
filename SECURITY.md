@@ -6,4 +6,4 @@ The integration connects only to the configured local ARC using CGI HTTP digest 
 
 Arm control is off by default. When enabled, Home Assistant can arm and disarm the ARC, so set a code, and treat access to Home Assistant as access to the alarm.
 
-Version 1.0.x is the supported public release line. Security fixes will be published as patch releases when feasible.
+Version 1.1.x is the supported public release line. Security fixes will be published as patch releases when feasible.

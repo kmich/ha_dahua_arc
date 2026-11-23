@@ -12,9 +12,9 @@ the ARC's ``AreaArmModeChange`` / ``ArmingFailure`` events, falling back to one
 read of the ``AreaArmMode`` table.
 
 The RPC itself is described by a :class:`CommandSpec`. The real spec,
-:data:`ARM_COMMAND_SPEC`, stays ``None`` until its method name and parameter
-shape are verified on hardware (see ``docs/arm-control/02-protocol.md``).
-Tests use :data:`FAKE_COMMAND_SPEC`, which is refused outside tests.
+:data:`ARM_COMMAND_SPEC`, encodes ``AlarmRegion.setArmMode`` (see
+``docs/arm-control/02-protocol.md``). Tests use :data:`FAKE_COMMAND_SPEC`,
+which is refused outside tests.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from .arming import (
     parse_abnormal_zones,
     parse_area_arm_modes,
 )
-from .util import timestamp
+from .util import safe_int, timestamp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,6 +134,8 @@ def error_fields(reply: dict[str, Any]) -> tuple[int | None, str | None]:
 
 def _fake_build_params(command: ArmCommand, password: str) -> dict[str, Any]:
     params: dict[str, Any] = {"Mode": command.mode, "Areas": list(command.areas)}
+    if command.force and command.mode != "D":
+        params["Force"] = True
     if command.code:
         params["Password"] = command.code
     return params
@@ -236,15 +238,28 @@ def _build_alarm_region_params(
     - 'pwd': base64-encoded user PIN or device password.
     - 'mode': arm mode string ('D', 'p1', 'T', 'p2').
     - 'areas': 1-based area indexes (1..32).
+    - 'detail.armOptions': optional arming profile ('Force' to bypass open
+      zones when arming, verified in Dahua NetSDK).
     """
     pin = command.code or password
     b64_pwd = base64.b64encode(pin.encode("utf-8")).decode("ascii")
     areas_1based = [a + 1 for a in sorted(command.areas)]
-    return {
+    params: dict[str, Any] = {
         "pwd": b64_pwd,
         "mode": command.mode,
         "areas": areas_1based,
     }
+    if command.force and command.mode != "D":
+        params["detail"] = {
+            "armOptions": {
+                "profile": "Force",
+                "triggerMode": "Remote",
+                "id": 0,
+                "name": "",
+                "clientAddress": "",
+            }
+        }
+    return params
 
 
 def _alarm_region_parse_reply(reply: dict[str, Any]) -> ReplyResult:
@@ -257,14 +272,41 @@ def _alarm_region_parse_reply(reply: dict[str, Any]) -> ReplyResult:
         detail = params.get("detail") or []
         open_zones: list[dict[str, Any]] = []
         for item in detail:
-            if isinstance(item, dict):
-                area = item.get("Area")
+            if not isinstance(item, dict):
+                continue
+            area = item.get("Area")
+            abnormal = [
+                {
+                    "area": area,
+                    "zone_index": safe_int(z.get("Index")),
+                    "zone": str(z.get("Name") or "").strip() or None,
+                    "reason": z.get("Reason"),
+                }
+                for z in item.get("ZoneAbnormal") or []
+                if isinstance(z, dict)
+            ]
+            if abnormal:
+                open_zones.extend(abnormal)
+            else:
                 for src in item.get("AlarmSource") or []:
                     open_zones.append({"area": area, "zone": src})
+        faults: list[str] = []
+        for fault in params.get("DeviceFault") or []:
+            if not isinstance(fault, dict):
+                continue
+            name = str(fault.get("Name") or "").strip()
+            reason = str(fault.get("Reason") or "").strip()
+            if name and reason:
+                faults.append(f"{name}: {reason}")
+            elif reason or name:
+                faults.append(reason or name)
+        error_message = f"Arm refused (armResult {arm_result})"
+        if faults:
+            error_message = f"{error_message}: {', '.join(faults)}"
         return ReplyResult(
             False,
             error_code=arm_result,
-            error_message=f"Arm refused (armResult {arm_result})",
+            error_message=error_message,
             open_zones=open_zones,
         )
     code, message = error_fields(reply)

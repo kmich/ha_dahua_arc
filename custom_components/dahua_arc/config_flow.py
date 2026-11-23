@@ -44,6 +44,7 @@ from .const import (
     CONF_DHIP_PORT,
     CONF_ENABLE_ARM_CONTROL,
     CONF_ENABLE_RESEARCH_FEATURES,
+    CONF_FORCE_ARM,
     CONF_HTTP_PORT,
     CONF_PERIODIC_RESYNC,
     CONF_REMATCH_EXISTING,
@@ -56,6 +57,7 @@ from .const import (
     DEFAULT_DHIP_PORT,
     DEFAULT_ENABLE_ARM_CONTROL,
     DEFAULT_ENABLE_RESEARCH_FEATURES,
+    DEFAULT_FORCE_ARM,
     DEFAULT_HTTP_PORT,
     DEFAULT_PERIODIC_RESYNC,
     DOMAIN,
@@ -233,6 +235,10 @@ def _arm_control_schema(
                 translation_key=CONF_ARM_MODES,
             )
         ),
+        vol.Required(
+            CONF_FORCE_ARM,
+            default=values.get(CONF_FORCE_ARM, DEFAULT_FORCE_ARM),
+        ): bool,
     }
     if ask_acknowledge:
         fields[vol.Required(CONF_ACKNOWLEDGE_CONTROL, default=False)] = bool
@@ -578,6 +584,9 @@ class DahuaArcOptionsFlow(OptionsFlowWithReload):
                 options[CONF_ARM_MODES] = [
                     m for m in VERIFIED_ARM_MODES if m in user_input[CONF_ARM_MODES]
                 ]
+                options[CONF_FORCE_ARM] = bool(
+                    user_input.get(CONF_FORCE_ARM, DEFAULT_FORCE_ARM)
+                )
                 options[CONF_ARM_CONTROL_ACK] = True
                 if code:
                     # Only the salted hash is stored; the code is dropped here.
