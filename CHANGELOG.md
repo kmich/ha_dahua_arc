@@ -4,6 +4,22 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
+## [1.1.0] - 2026-11-23
+
+### Added
+
+- **Force-arming past open zones**: `AlarmRegion.setArmMode` now sends `detail.armOptions` (`profile: "Force"`) when force-arming is requested, matching Dahua's 2026 NetSDK (`dhnetsdk.dll`) wire format (live ARC3800H confirmation pending).
+- **Force-arm option (`force_arm`)**: Opt-in checkbox under **Configure → Arm and disarm control** (off by default) lets standard **Arm home** and **Arm away** actions force-arm past open doors/windows until disarmed.
+- **`dahua_arc.arm` entity action**: Arm any Dahua ARC panel entity with explicit `mode` (`home` / `away`), `force` (`true` / `false`), and optional `code`.
+
+### Changed
+
+- **Documentation & Marketplace readiness**: Added the one-click Home Assistant Marketplace badge and `dahua_arc.arm` action example in the README, updated supported release docs to `1.1.x`, and updated the arm-control protocol documentation for `AlarmRegion.setArmMode` and NetSDK-traced force-arming.
+
+### Fixed
+
+- **Open-zone refusal error formatting**: Parse `ZoneAbnormal` and `DeviceFault` from `AlarmRegion.setArmMode` refusal replies and resolve numeric `AlarmSource` IDs to zone names instead of raising `TypeError` when joining integer zone IDs.
+
 ## [1.0.7] - 2026-11-05
 
 ### Changed

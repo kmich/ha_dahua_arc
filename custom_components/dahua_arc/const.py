@@ -39,6 +39,7 @@ CONF_ARM_CODE_HASH = "arm_code_hash"
 CONF_CODE_DISARM_REQUIRED = "code_disarm_required"
 CONF_CODE_ARM_REQUIRED = "code_arm_required"
 CONF_ARM_MODES = "arm_modes"
+CONF_FORCE_ARM = "force_arm"
 CONF_ARM_CONTROL_ACK = "arm_control_acknowledged"
 CONF_ARM_CODE_ACK_NO_CODE = "arm_code_ack_no_code"
 # Form-only fields that never reach the stored options.
@@ -49,6 +50,7 @@ CONF_ACKNOWLEDGE_CONTROL = "acknowledge_control"
 DEFAULT_ENABLE_ARM_CONTROL = False
 DEFAULT_CODE_DISARM_REQUIRED = True
 DEFAULT_CODE_ARM_REQUIRED = False
+DEFAULT_FORCE_ARM = False
 ARM_MODE_HOME = "armed_home"
 ARM_MODE_AWAY = "armed_away"
 ARM_MODE_NIGHT = "armed_night"

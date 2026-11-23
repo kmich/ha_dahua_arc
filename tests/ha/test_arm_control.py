@@ -24,13 +24,20 @@ from custom_components.dahua_arc.const import (
     CONF_CODE_ARM_REQUIRED,
     CONF_CODE_DISARM_REQUIRED,
     CONF_ENABLE_ARM_CONTROL,
+    CONF_FORCE_ARM,
     DOMAIN,
     ISSUE_ARM_CONTROL_UNSUPPORTED,
     ISSUE_ARM_CONTROL_WITHOUT_CODE,
 )
 from custom_components.dahua_arc.diagnostics import async_get_config_entry_diagnostics
 from custom_components.dahua_arc.protocol.arming import ArmArea
-from custom_components.dahua_arc.protocol.control import ARM_COMMAND_SPEC, CommandSpec
+from custom_components.dahua_arc.protocol.control import (
+    ARM_COMMAND_SPEC,
+    ArmCommand,
+    CommandOutcome,
+    CommandResult,
+    CommandSpec,
+)
 from custom_components.dahua_arc.repairs import async_create_fix_flow
 from homeassistant.components.alarm_control_panel import DATA_COMPONENT
 from homeassistant.components.alarm_control_panel import (
@@ -615,3 +622,91 @@ async def test_real_arm_command_spec_with_home_assistant_panel(
         # Disarm through real command spec
         await h.call("alarm_disarm")
         assert h.state(SYSTEM_UID) == State.DISARMED
+
+
+@pytest.mark.parametrize("spec", [None, ARM_COMMAND_SPEC])
+async def test_force_arm_option_allows_arming_with_open_zones(
+    hass: HomeAssistant, spec: CommandSpec | None
+) -> None:
+    options = {CONF_FORCE_ARM: True}
+    async with harness(hass, options=options, spec=spec) as h:
+        h.arc.open_zones = [WINDOW]
+
+        await h.call("alarm_arm_home", KITCHEN_UID)
+        await hass.async_block_till_done()
+        assert h.state(KITCHEN_UID) == State.ARMED_HOME
+        attrs = h.attributes(KITCHEN_UID)
+        assert attrs["forced"] is True
+        assert attrs["bypassed_zones"] == ["Kitchen Window"]
+        assert attrs["last_command"]["force"] is True
+
+        await h.call("alarm_disarm", KITCHEN_UID)
+        await hass.async_block_till_done()
+        assert h.state(KITCHEN_UID) == State.DISARMED
+        assert h.attributes(KITCHEN_UID)["last_command"]["force"] is False
+
+        await h.call("alarm_arm_away", KITCHEN_UID)
+        await hass.async_block_till_done()
+        assert h.state(KITCHEN_UID) == State.ARMED_AWAY
+        assert h.attributes(KITCHEN_UID)["forced"] is True
+
+
+async def test_dahua_arc_arm_service_force_and_code(hass: HomeAssistant) -> None:
+    options = {
+        CONF_FORCE_ARM: False,
+        CONF_ARM_CODE_HASH: CODE_HASH,
+        CONF_CODE_ARM_REQUIRED: True,
+    }
+    async with harness(hass, options=options, spec=ARM_COMMAND_SPEC) as h:
+        h.arc.open_zones = [WINDOW]
+        entity_id = h.entity_id(KITCHEN_UID)
+
+        with pytest.raises(ServiceValidationError) as err:
+            await hass.services.async_call(
+                DOMAIN,
+                "arm",
+                {"entity_id": entity_id, "mode": "home", "force": True},
+                blocking=True,
+            )
+        assert err.value.translation_key == "code_required"
+
+        with pytest.raises(HomeAssistantError) as refused:
+            await hass.services.async_call(
+                DOMAIN,
+                "arm",
+                {"entity_id": entity_id, "mode": "home", "force": False, "code": CODE},
+                blocking=True,
+            )
+        assert refused.value.translation_key == "arm_refused_open_zones"
+
+        await hass.services.async_call(
+            DOMAIN,
+            "arm",
+            {"entity_id": entity_id, "mode": "away", "force": True, "code": CODE},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        assert h.state(KITCHEN_UID) == State.ARMED_AWAY
+        assert h.attributes(KITCHEN_UID)["forced"] is True
+        assert h.attributes(KITCHEN_UID)["bypassed_zones"] == ["Kitchen Window"]
+
+
+async def test_refusal_resolves_integer_alarm_source_ids(hass: HomeAssistant) -> None:
+    async with harness(hass, spec=ARM_COMMAND_SPEC) as h:
+        panel = h.entity(KITCHEN_UID)
+        res_known = CommandResult(
+            outcome=CommandOutcome.REFUSED,
+            command=ArmCommand(mode="p1", areas=(0,)),
+            started_at="2026-11-23T00:00:00+02:00",
+            open_zones=[{"area": 1, "zone": KITCHEN_WINDOW}, {"area": 1, "zone": 999}],
+        )
+        err = panel._exception(res_known, 10.0)
+        assert err.translation_key == "arm_refused_open_zones"
+        assert err.translation_placeholders == {
+            "areas": "Kitchen",
+            "zones": "Kitchen Window, Zone 999",
+        }
+
+        with patch.object(h.hub, "refresh_arm_state_probe"):
+            diag = await async_get_config_entry_diagnostics(hass, h.entry)
+        assert diag["arm_control_options"]["force_arm"] is False

@@ -1,6 +1,6 @@
 # Arm/disarm control — design and implementation package
 
-Status: **Implemented and Verified on Hardware (v1.0.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with cryptographic PIN authentication.
+Status: **Implemented and Verified on Hardware (v1.0.0; force-arming added in v1.1.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with cryptographic PIN authentication.
 
 ## What was built
 
@@ -16,8 +16,9 @@ Opt-in control of the ARC's arm state from Home Assistant:
 - turned off by default, with an optional Home Assistant code for disarm (and,
   if wanted, arm).
 
-Still gated on hardware evidence: forced arm past open zones, the second
-partial mode (`p2`), and exit/entry-delay states.
+Shipped in v1.1.0 from Dahua's 2026 NetSDK (`dhnetsdk.dll`) and DoLynk Developer Documentation (live ARC3800H confirmation pending): forced arm past open zones (`detail.armOptions.profile = "Force"`, opt-in `force_arm` option, and `dahua_arc.arm` entity action).
+
+Still gated on hardware evidence: the second partial mode (`p2`) and exit/entry-delay states.
 
 ## Read in this order
 

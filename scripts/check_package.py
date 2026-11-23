@@ -9,10 +9,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "dahua_arc"
-ALLOWED = {".py", ".json", ".png", ".md"}
+ALLOWED = {".py", ".json", ".png", ".md", ".yaml"}
 REQUIRED = {
     "custom_components/dahua_arc/__init__.py",
     "custom_components/dahua_arc/manifest.json",
+    "custom_components/dahua_arc/icons.json",
+    "custom_components/dahua_arc/services.yaml",
     "custom_components/dahua_arc/translations/en.json",
     "custom_components/dahua_arc/brand/icon.png",
     "custom_components/dahua_arc/vendor/LICENSE-python-dhip",

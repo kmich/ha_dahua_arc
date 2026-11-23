@@ -422,6 +422,7 @@ def test_build_alarm_region_params() -> None:
     params = _build_alarm_region_params(cmd, "pwd123")
     assert params["mode"] == "T"
     assert params["areas"] == [1]
+    assert "detail" not in params
     assert base64.b64decode(params["pwd"]).decode("ascii") == "pwd123"
 
     # User code overrides device password and area index becomes 1-based
@@ -429,7 +430,28 @@ def test_build_alarm_region_params() -> None:
     params_code = _build_alarm_region_params(cmd_code, "pwd123")
     assert params_code["mode"] == "D"
     assert params_code["areas"] == [1, 17]
+    assert "detail" not in params_code
     assert base64.b64decode(params_code["pwd"]).decode("ascii") == "987654"
+
+    # Force-arm includes detail.armOptions.profile = "Force" for arm modes
+    for mode in ("p1", "T"):
+        cmd_force = ArmCommand(mode=mode, areas=(0,), force=True)  # type: ignore[arg-type]
+        params_force = _build_alarm_region_params(cmd_force, "pwd123")
+        assert params_force["detail"] == {
+            "armOptions": {
+                "profile": "Force",
+                "triggerMode": "Remote",
+                "id": 0,
+                "name": "",
+                "clientAddress": "",
+            }
+        }
+
+    # Disarm ignores force=True
+    params_disarm_force = _build_alarm_region_params(
+        ArmCommand(mode="D", areas=(0,), force=True), "pwd123"
+    )
+    assert "detail" not in params_disarm_force
 
 
 def test_parse_alarm_region_reply() -> None:
@@ -437,6 +459,7 @@ def test_parse_alarm_region_reply() -> None:
     res = _alarm_region_parse_reply(ok_reply)
     assert res.ok is True
 
+    # Legacy AlarmSource integers (still preserved when ZoneAbnormal is absent)
     refuse_reply = {
         "id": 1299,
         "params": {
@@ -450,6 +473,37 @@ def test_parse_alarm_region_reply() -> None:
     assert res_refuse.error_code == 1001
     assert len(res_refuse.open_zones) == 1
     assert res_refuse.open_zones[0] == {"area": 1, "zone": 150}
+
+    # 2026 DoLynk dhnetsdk ZoneAbnormal + DeviceFault payload
+    refuse_abnormal = {
+        "id": 1300,
+        "params": {
+            "armResult": 1,
+            "detail": [
+                {
+                    "Area": 3,
+                    "AlarmSource": [191],
+                    "ZoneAbnormal": [
+                        {"Index": 191, "Name": " Office Window ", "Reason": "Open"}
+                    ],
+                }
+            ],
+            "DeviceFault": [{"Name": "Hub", "Reason": "NoGSM"}],
+        },
+        "result": True,
+    }
+    res_abnormal = _alarm_region_parse_reply(refuse_abnormal)
+    assert res_abnormal.ok is False
+    assert res_abnormal.error_code == 1
+    assert res_abnormal.open_zones == [
+        {
+            "area": 3,
+            "zone_index": 191,
+            "zone": "Office Window",
+            "reason": "Open",
+        }
+    ]
+    assert "Hub: NoGSM" in (res_abnormal.error_message or "")
 
 
 def test_build_config_manager_params() -> None:
@@ -497,3 +551,51 @@ def test_real_arm_command_spec_executes_against_fake_arc(rig: Rig) -> None:
     res = controller.execute(cmd)
     assert res.outcome == CommandOutcome.CONFIRMED
     assert "AlarmRegion.setArmMode" in rig.arc.calls
+
+
+def test_force_arm_bypasses_open_zones_with_fake_spec(rig: Rig) -> None:
+    rig.arc.open_zones = [OFFICE_WINDOW]
+    refused = rig.controller.execute(ArmCommand(mode="p1", areas=(2,), force=False))
+    assert refused.outcome is CommandOutcome.REFUSED
+    assert rig.tracker.areas[2].raw_mode == "D"
+
+    forced = rig.controller.execute(ArmCommand(mode="p1", areas=(2,), force=True))
+    assert forced.outcome is CommandOutcome.CONFIRMED
+    assert rig.arc.arm_requests[-1] == {"Mode": "p1", "Areas": [2], "Force": True}
+    assert rig.tracker.areas[2].raw_mode == "p1"
+    assert rig.tracker.areas[2].profile == "Force"
+    assert [z["zone"] for z in rig.tracker.areas[2].bypassed_zones] == ["Office Window"]
+
+
+def test_force_arm_bypasses_open_zones_with_real_spec(rig: Rig) -> None:
+    controller = rig.build(spec=ARM_COMMAND_SPEC, allow_fake_spec=False)
+    rig.arc.open_zones = [OFFICE_WINDOW]
+
+    refused = controller.execute(ArmCommand(mode="T", areas=(2,), force=False))
+    assert refused.outcome is CommandOutcome.REFUSED
+    assert rig.tracker.areas[2].raw_mode == "D"
+
+    forced = controller.execute(ArmCommand(mode="T", areas=(2,), force=True))
+    assert forced.outcome is CommandOutcome.CONFIRMED
+    assert rig.arc.arm_requests[-1]["detail"] == {
+        "armOptions": {
+            "profile": "Force",
+            "triggerMode": "Remote",
+            "id": 0,
+            "name": "",
+            "clientAddress": "",
+        }
+    }
+    assert rig.tracker.areas[2].raw_mode == "T"
+    assert rig.tracker.areas[2].profile == "Force"
+    assert [z["zone"] for z in rig.tracker.areas[2].bypassed_zones] == ["Office Window"]
+
+
+def test_alarm_region_refused_via_reply_parses_zone_abnormal(rig: Rig) -> None:
+    controller = rig.build(spec=ARM_COMMAND_SPEC, allow_fake_spec=False)
+    rig.arc.open_zones = [OFFICE_WINDOW]
+    rig.arc.arm_reply = "refused"
+    res = controller.execute(ArmCommand(mode="p1", areas=(2,), force=False))
+    assert res.outcome is CommandOutcome.REFUSED
+    assert res.rpc_error_code == 1
+    assert [z["zone"] for z in res.open_zones] == ["Office Window"]

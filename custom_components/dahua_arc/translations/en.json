@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to Dahua ARC",
-        "description": "Connect locally to a Dahua ARC alarm hub. In normal operation the integration only reads from the hub: it discovers the ARC hub, paired radio devices, MultiIO wired inputs, wireless sensors, sirens, repeaters, keyfobs/keypads, alarm-related configuration and realtime alarm-input state. It never arms, disarms or triggers outputs.",
+        "description": "By default the integration only reads from the hub: it discovers the ARC hub, paired radio devices, MultiIO wired inputs, wireless sensors, sirens, repeaters, keyfobs/keypads, alarm-related configuration and realtime alarm-input state. Opt-in arm and disarm control can be enabled later in the integration options.",
         "data": {
           "host": "Host",
           "username": "Username",
@@ -30,7 +30,7 @@
         "data_description": {
           "periodic_resync_seconds": "A local DHIP snapshot verifies current AlarmIn states if a realtime event was missed. 300 seconds is recommended.",
           "auto_area_match": "Uses Dahua AlarmSubSystem room assignments first, then local sensor names, and matches them against your existing Home Assistant area names and aliases. Ambiguous matches are skipped.",
-          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation."
+          "enable_research_features": "Off by default. Enables LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. Besides opt-in arm control, the detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for normal operation."
         }
       },
       "area_match": {
@@ -106,7 +106,7 @@
         "data_description": {
           "periodic_resync_seconds": "300 seconds is recommended for normal operation.",
           "auto_area_match": "When enabled, only entities without an explicit area are considered. Disabling this does not remove previous area assignments.",
-          "enable_research_features": "Off by default. Enables the experimental PIRCam snapshot camera, LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. The detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for production wired-zone operation.",
+          "enable_research_features": "Off by default. Enables LowRateWPAN polling/subscription diagnostics and PIRCam detector-test buttons. Besides opt-in arm control, the detector-test buttons are the only feature that writes to the ARC (they toggle a PIR camera's sensitivity test). Leave disabled for normal operation.",
           "enable_arm_control": "Off by default. When on, Home Assistant can arm and disarm the alarm from dashboards, automations and voice. You can require a code on the next screen."
         }
       },
@@ -140,12 +140,14 @@
           "code_disarm_required": "Require the code to disarm",
           "code_arm_required": "Require the code to arm",
           "arm_modes": "Arm modes offered",
+          "force_arm": "Force-arm past open zones",
           "acknowledge_control": "I understand that Home Assistant can now disarm my alarm"
         },
         "data_description": {
           "arm_code": "4 to 8 digits. Leave empty to keep the current code. This is a Home Assistant code, not an ARC user PIN.",
           "clear_arm_code": "Removes the stored code.",
-          "arm_modes": "Which arm actions Home Assistant offers."
+          "arm_modes": "Which arm actions Home Assistant offers.",
+          "force_arm": "Off by default. When on, the standard Arm home and Arm away buttons force-arm the ARC even if a door or window is open (open zones are bypassed until disarmed). You can also force-arm on demand with the dahua_arc.arm action."
         }
       }
     },
@@ -364,6 +366,32 @@
         "armed_home": "Home",
         "armed_away": "Away"
       }
+    },
+    "arm_service_mode": {
+      "options": {
+        "home": "Home",
+        "away": "Away"
+      }
+    }
+  },
+  "services": {
+    "arm": {
+      "name": "Arm",
+      "description": "Arm a Dahua ARC alarm panel, optionally forcing past open zones.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Arming mode to activate (home or away)."
+        },
+        "force": {
+          "name": "Force",
+          "description": "Arm even when zones are open (ARC Force profile; open zones are bypassed until disarmed)."
+        },
+        "code": {
+          "name": "Code",
+          "description": "Home Assistant arm code, if required."
+        }
+      }
     }
   },
   "exceptions": {
@@ -383,7 +411,7 @@
       "message": "Another arm or disarm command is still running. Try again in a few seconds."
     },
     "arm_refused_open_zones": {
-      "message": "The ARC refused to arm {areas}: {zones} open. Close them and try again."
+      "message": "The ARC refused to arm {areas}: {zones} open. Close them, or force-arm."
     },
     "arm_refused": {
       "message": "The ARC refused to arm {areas}."

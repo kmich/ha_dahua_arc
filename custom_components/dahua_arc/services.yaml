@@ -1,0 +1,26 @@
+arm:
+  target:
+    entity:
+      integration: dahua_arc
+      domain: alarm_control_panel
+  fields:
+    mode:
+      required: true
+      example: "home"
+      selector:
+        select:
+          options:
+            - "home"
+            - "away"
+          translation_key: arm_service_mode
+    force:
+      required: false
+      default: false
+      example: true
+      selector:
+        boolean:
+    code:
+      required: false
+      selector:
+        text:
+          type: password
