@@ -236,6 +236,9 @@ class ArcHub:
     def pircam_snapshot(self, index: int) -> dict[str, Any] | None:
         return self.pircam.snapshot(index) if self.pircam else None
 
+    def has_pircam_snapshot(self, index: int) -> bool:
+        return self.pircam.has_cached_image(index) if self.pircam else False
+
     def fetch_pircam_image(self, index: int) -> bytes | None:
         return self.pircam.fetch_image(index) if self.pircam else None
 

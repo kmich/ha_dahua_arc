@@ -4,6 +4,13 @@ All notable user-visible changes to Dahua ARC will be documented in this file.
 
 The project uses semantic versioning for release tags where practical.
 
+## [1.1.1] - 2026-11-24
+
+### Fixed
+
+- **PIRCam event-loop blocking**: `DahuaArcPirCamera.extra_state_attributes` now reads `has_snapshot` from `PirCamMedia`'s in-memory cache (`has_cached_image`) instead of calling `fetch_pircam_image` on the Home Assistant event loop, keeping DHIP/HTTP fetches and disk caching strictly inside the executor job used by `async_camera_image`.
+- **Arm code handling**: Kept the optional 4 to 8 digit Home Assistant arm/disarm code strictly inside Home Assistant as documented (`arm_code.py` and the options form) and removed code pass-through from `ArmCommand`, so `AlarmRegion.setArmMode` always authenticates with the stored ARC device password instead of failing when a user configures a Home Assistant code.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added

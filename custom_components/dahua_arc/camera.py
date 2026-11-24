@@ -98,7 +98,7 @@ class DahuaArcPirCamera(DahuaArcEntity, Camera):
             )
             if file_path:
                 attrs["file_path"] = file_path
-        attrs["has_snapshot"] = bool(self.hub.fetch_pircam_image(self.zone.index))
+        attrs["has_snapshot"] = self.hub.has_pircam_snapshot(self.zone.index)
         return attrs
 
     @override

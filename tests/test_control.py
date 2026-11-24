@@ -425,13 +425,13 @@ def test_build_alarm_region_params() -> None:
     assert "detail" not in params
     assert base64.b64decode(params["pwd"]).decode("ascii") == "pwd123"
 
-    # User code overrides device password and area index becomes 1-based
-    cmd_code = ArmCommand(mode="D", areas=(0, 16), code="987654")
-    params_code = _build_alarm_region_params(cmd_code, "pwd123")
-    assert params_code["mode"] == "D"
-    assert params_code["areas"] == [1, 17]
-    assert "detail" not in params_code
-    assert base64.b64decode(params_code["pwd"]).decode("ascii") == "987654"
+    # Multi-area disarm uses stored device password and 1-based area indexes
+    cmd_multi = ArmCommand(mode="D", areas=(0, 16))
+    params_multi = _build_alarm_region_params(cmd_multi, "pwd123")
+    assert params_multi["mode"] == "D"
+    assert params_multi["areas"] == [1, 17]
+    assert "detail" not in params_multi
+    assert base64.b64decode(params_multi["pwd"]).decode("ascii") == "pwd123"
 
     # Force-arm includes detail.armOptions.profile = "Force" for arm modes
     for mode in ("p1", "T"):

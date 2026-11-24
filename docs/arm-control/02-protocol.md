@@ -145,7 +145,7 @@ By disassembling Dahua NetSDK (`dhnetsdk.dll` / `avnetsdk.dll`) using Capstone, 
 - **Request payload**:
   ```json
   {
-    "pwd": "<base64-encoded user PIN or device password>",
+    "pwd": "<base64-encoded stored ARC device password>",
     "mode": "D" | "p1" | "T" | "p2",
     "areas": [1, 2, ..., 32],
     "detail": {
@@ -187,7 +187,7 @@ By disassembling Dahua NetSDK (`dhnetsdk.dll` / `avnetsdk.dll`) using Capstone, 
 1. **The `AreaArmMode` Table Lock (`error 289407505`)**:
    `configManager.setConfig` targets the installer configuration table. The ARC3800H firmware enforces a strict tamper lock while the system is armed, rejecting table writes with `error 289407505: System Arming`.
 2. **Missing `pwd` Parameter**:
-   `AlarmRegion.setArmMode` strictly rejects any call without a `pwd` field with `-267976701`. The password/PIN must be ASCII Base64 encoded (`base64.b64encode(pin.encode()).decode()`).
+   `AlarmRegion.setArmMode` strictly rejects any call without a `pwd` field with `-267976701`. The stored ARC device password must be ASCII Base64 encoded (`base64.b64encode(password.encode()).decode()`). The optional Home Assistant code is a Home Assistant-side gate only and is never sent to the ARC.
 3. **1-Based Subsystem Addressing**:
    The ARC firmware addresses subsystems using 1-based indexing (`areas: [1..32]`). Passing 0-based indexes failed to target the intended areas.
 
@@ -299,7 +299,7 @@ implementation PR.
 | Instance service? | `False` (static RPC) | Verified on hardware |
 | Params shape | `{"pwd": "<b64>", "mode": "<mode>", "areas": [1..32]}` plus optional `"detail": {"armOptions": {"profile": "Force", "triggerMode": "Remote", "id": 0, "name": "", "clientAddress": ""}}` | Core fields verified on hardware; `detail.armOptions` (`profile: "Force"`) traced from 2026 `dhnetsdk.dll` + DoLynk docs (live force-arm test pending) |
 | Mode codes | `D` Disarmed, `p1` Home/Stay, `T` Away | Verified on hardware (`p2` unverified) |
-| Password/PIN in RPC params? | Required (`pwd`: ASCII Base64 user PIN or device password) | Verified on hardware |
+| Password/PIN in RPC params? | Required (`pwd`: ASCII Base64 stored ARC device password; the optional HA code is never sent to the ARC) | Verified on hardware |
 | Success / refusal reply | `{"result": true, "params": {"armResult": 0}}`; refusal carries `armResult != 0`, `detail[].ZoneAbnormal[]` / `AlarmSource[]`, and optional `DeviceFault[]` | `armResult: 0` verified on hardware; `ZoneAbnormal`/`DeviceFault` parser traced from 2026 `dhnetsdk.dll` |
 | Fragmentation | `fragmented=False` | Verified on hardware |
 

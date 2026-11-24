@@ -67,8 +67,6 @@ class ArmCommand:
     force: bool = False
     # Home Assistant context id, kept for diagnostics and never sent.
     origin: str = ""
-    # Optional keypad code or PIN; never serialized or stored in diagnostics history.
-    code: str = ""
 
 
 @dataclass(slots=True)
@@ -136,8 +134,6 @@ def _fake_build_params(command: ArmCommand, password: str) -> dict[str, Any]:
     params: dict[str, Any] = {"Mode": command.mode, "Areas": list(command.areas)}
     if command.force and command.mode != "D":
         params["Force"] = True
-    if command.code:
-        params["Password"] = command.code
     return params
 
 
@@ -235,14 +231,13 @@ def _build_alarm_region_params(
 
     AlarmRegion.setArmMode is the operational keypad-emulating arm/disarm command.
     Parameters:
-    - 'pwd': base64-encoded user PIN or device password.
+    - 'pwd': base64-encoded stored ARC device password.
     - 'mode': arm mode string ('D', 'p1', 'T', 'p2').
     - 'areas': 1-based area indexes (1..32).
     - 'detail.armOptions': optional arming profile ('Force' to bypass open
       zones when arming, verified in Dahua NetSDK).
     """
-    pin = command.code or password
-    b64_pwd = base64.b64encode(pin.encode("utf-8")).decode("ascii")
+    b64_pwd = base64.b64encode(password.encode("utf-8")).decode("ascii")
     areas_1based = [a + 1 for a in sorted(command.areas)]
     params: dict[str, Any] = {
         "pwd": b64_pwd,
@@ -437,11 +432,8 @@ class ArmController:
         open_zones: list[dict[str, Any]] | None = None,
         confirmed_by: Literal["event", "table"] | None = None,
     ) -> CommandResult:
-        if message:
-            if self._password:
-                message = message.replace(self._password, "***")
-            if command.code:
-                message = message.replace(command.code, "***")
+        if message and self._password:
+            message = message.replace(self._password, "***")
         return CommandResult(
             outcome=outcome,
             command=command,

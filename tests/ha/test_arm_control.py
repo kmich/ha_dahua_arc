@@ -710,3 +710,18 @@ async def test_refusal_resolves_integer_alarm_source_ids(hass: HomeAssistant) ->
         with patch.object(h.hub, "refresh_arm_state_probe"):
             diag = await async_get_config_entry_diagnostics(hass, h.entry)
         assert diag["arm_control_options"]["force_arm"] is False
+
+
+async def test_ha_code_is_never_sent_to_arc_panel(hass: HomeAssistant) -> None:
+    import base64
+
+    options = {CONF_ARM_CODE_HASH: CODE_HASH, CONF_CODE_ARM_REQUIRED: True}
+    async with harness(hass, options=options, spec=ARM_COMMAND_SPEC) as h:
+        await h.call("alarm_arm_away", code=CODE)
+        await h.call("alarm_disarm", code=CODE)
+        await hass.async_block_till_done()
+        assert len(h.requests()) == 2
+        for req in h.requests():
+            decoded = base64.b64decode(req["pwd"]).decode("utf-8")
+            assert decoded == DATA[CONF_PASSWORD]
+            assert decoded != CODE

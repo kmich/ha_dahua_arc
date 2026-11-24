@@ -1,6 +1,6 @@
 # Arm/disarm control — design and implementation package
 
-Status: **Implemented and Verified on Hardware (v1.0.0; force-arming added in v1.1.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with cryptographic PIN authentication.
+Status: **Implemented and Verified on Hardware (v1.0.0; force-arming added in v1.1.0)**. Native panel arm/disarm control via `AlarmRegion.setArmMode` is implemented, fully tested, and confirmed on ARC3800H hardware. Opt-in arm control exposes whole-system and per-area `alarm_control_panel` entities with optional Home Assistant code verification.
 
 ## What was built
 
