@@ -125,3 +125,35 @@ def test_pircam_media_disk_caching(tmp_path: os.PathLike) -> None:
         storage_dir=str(tmp_path),
     )
     assert pm2.fetch_image(0) == real_jpeg
+
+
+def test_extra_state_attributes_uses_cache_without_network_fetch(
+    pircam_zone: Zone, fake_entry: MagicMock
+) -> None:
+    hub = ArcHub("192.0.2.10", 80, 5000, "admin", "secret")
+    hub.realtime = MagicMock(connected=True)
+    hub.zones = {0: pircam_zone}
+    snapshot_client = MagicMock()
+    snapshot_client.download_file.side_effect = AssertionError(
+        "extra_state_attributes must not fetch over the network"
+    )
+    pircam = PirCamMedia(
+        hub.host, 80, "admin", "secret", hub.zones, snapshot_client, MagicMock()
+    )
+    pircam.snapshots[0] = {
+        "index": 0,
+        "temp_path": "/var/tmp/snap.jpg",
+        "file_path": "/mnt/sd/snap.jpg",
+    }
+    hub.pircam = pircam
+
+    cam = DahuaArcPirCamera(hub, fake_entry, pircam_zone)
+    assert cam.extra_state_attributes["has_snapshot"] is False
+    snapshot_client.download_file.assert_not_called()
+
+    real_jpeg = (
+        b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+    )
+    pircam._image_cache[0] = real_jpeg
+    assert cam.extra_state_attributes["has_snapshot"] is True
+    snapshot_client.download_file.assert_not_called()

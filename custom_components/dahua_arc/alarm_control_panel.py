@@ -319,7 +319,6 @@ class DahuaArcAlarmPanel(DahuaArcArmStateEntity, AlarmControlPanelEntity):
             areas=self._target,
             force=bool(force) and not disarm,
             origin=self._context_id(),
-            code=str(code or "").strip(),
         )
         try:
             result = await self.hass.async_add_executor_job(controller.execute, command)

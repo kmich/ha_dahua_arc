@@ -432,7 +432,7 @@
       "message": "The ARC rejected the command (error {code}: {message})."
     },
     "arm_bad_device_password": {
-      "message": "The ARC rejected the panel command because the device password or PIN was incorrect."
+      "message": "The ARC rejected the panel command because the stored device password was incorrect."
     }
   }
 }

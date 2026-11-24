@@ -72,7 +72,8 @@ class PirCamMedia:
                 pass
 
     def _save_cached_image(self, index: int, raw: bytes) -> None:
-        self._image_cache[index] = raw
+        with self.lock:
+            self._image_cache[index] = raw
         if not self.storage_dir:
             return
         path = self._cache_path(index)
@@ -82,6 +83,11 @@ class PirCamMedia:
                     f.write(raw)
             except Exception:
                 pass
+
+    def has_cached_image(self, index: int) -> bool:
+        """Return True when a JPEG snapshot is currently cached in memory."""
+        with self.lock:
+            return bool(self._image_cache.get(index))
 
     def process_event(self, event: dict[str, Any]) -> None:
         with self.lock:

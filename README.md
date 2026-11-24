@@ -4,7 +4,7 @@
 
 Local-only Home Assistant integration for Dahua ARC alarm controllers (ARC3800H series). It provides full local zone observability and native alarm panel arm/disarm control using direct DHIP TCP/5000 protocol communication and local CGI table discovery. No cloud or SIA receiver dependency is required.
 
-In default operation without arm control enabled, the integration runs read-only. When arm control is enabled, Home Assistant provides whole-system and per-area `alarm_control_panel` entities with PIN verification.
+In default operation without arm control enabled, the integration runs read-only. When arm control is enabled, Home Assistant provides whole-system and per-area `alarm_control_panel` entities with optional Home Assistant code verification.
 
 ## Supported scope
 
@@ -18,7 +18,7 @@ In default operation without arm control enabled, the integration runs read-only
 - The current arm state is read from the ARC's `AreaArmMode` table when the realtime stream connects or reconnects and on every periodic resync, so it is known at startup and a missed event is corrected. A table read never overrides a newer arm event. If the table cannot be read, arm state stays **unknown** until the next arm or disarm. Home (`p1`), Away (`T`) and disarm (`D`) are verified on hardware; the second partial mode (`p2`) is not yet. An unrecognised mode leaves the state unknown and appears in diagnostics.
 - Alarms are shown read-only, from the ARC's `AlarmLocal` events: an **Alarm** binary sensor for the whole system and an **<area> alarm** binary sensor for every enabled Dahua area. An area's alarm turns on when a zone triggers it and stays on until the area is disarmed (or the ARC sends `AlarmClear`), even after the input restores. Attributes list the zones that triggered it, with times. Verified on hardware for an instant-zone intrusion while armed Home, and for a 24-hour zone while disarmed. `SensorAbnormal` line faults are not counted as alarms; see the **Fault** sensor above.
 - The ARC has no readable "alarm in progress" table, so alarm state comes from events alone. It is **unknown** until the area's arm state is known, then off until an alarm arrives. An alarm that is on when the realtime stream reconnects stays on until a table read shows the area disarmed. An alarm that *starts* while Home Assistant is disconnected is not reported.
-- The integration supports native alarm-control-panel entities with password/PIN verification over the local DHIP protocol. Arming and disarming actions are confirmed from the ARC's authoritative `AreaArmModeChange` events.
+- The integration supports native alarm-control-panel entities with optional Home Assistant code verification over the local DHIP protocol. Arming and disarming actions are confirmed from the ARC's authoritative `AreaArmModeChange` events.
 - Wireless PIR motion is observable via armed `AlarmLocal` events (with a 5s hold timer), walk-test sensitivity testing, and intrusion media capture for both standard PIR (`PassiveInfrared` / ARD1233) and PIRCam (`ARD1731-W2`) sensors.
 
 ## Installation
@@ -73,7 +73,7 @@ Arm control is off by default. When it is enabled in the integration options, Ho
 
 - **Native Operational Control (`AlarmRegion.setArmMode`)**: Verified on Dahua ARC3800H hardware. Directly controls alarm states without table locks, perfectly emulating physical wall keypad behavior.
 - **Whole-System & Per-Area Control**: Arm Home, Arm Away, and Disarm the whole system in a single action without zone selection, or control individual areas separately.
-- **PIN Code Authentication**: Arming and disarming actions pass the verified PIN code through to the native panel RPC. Disarm (and optionally arm) can be strictly PIN-gated using Home Assistant's built-in PBKDF2/SHA-256 hash checks with attempt rate limiting and lockout.
+- **Home Assistant Code Protection**: Disarm (and optionally arm) can be gated by a 4 to 8 digit Home Assistant code verified with PBKDF2/SHA-256 hashing, attempt rate limiting, and lockout. The code stays inside Home Assistant and is never sent to the ARC; panel RPC calls authenticate with the stored ARC device password.
 - **Authoritative Event Confirmation**: State transitions are confirmed by the ARC's own `AreaArmModeChange` events rather than assuming success from the RPC reply.
 - **Open-Zone Readiness & Force Arming**: When an arm command is blocked by open or faulted zones, the integration reports the open zones. Enable **Force-arm past open zones** in the arm-control options if standard **Arm home** and **Arm away** actions should arm past open zones using Dahua's NetSDK `detail.armOptions` (`profile: "Force"`; the ARC marks those areas as forced and bypasses the open zones until disarmed), or call the `dahua_arc.arm` entity action (`mode`, `force`, `code`) on demand in dashboards and automations.
 
